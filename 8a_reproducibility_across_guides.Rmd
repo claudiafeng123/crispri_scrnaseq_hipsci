@@ -1,0 +1,275 @@
+---
+title: "Reproducibility across guides"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  experiment_name : "Magpie"
+  date: "2022-08-15"
+  section_name: "8a_reproducbility_across_guides"
+---
+
+
+
+```{r, message=FALSE, warning=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+
+# Distribution of Correlation
+
+Correlation of all differentially expressed genes, where there are > 20 DEG and > 15 cells for each guide.
+
+```{r dist_conf_guides, echo = F, warning = F, fig.width = 6, fig.height = 4}
+df4plot <- cor_across_guides %>%
+  dplyr::select('guide_1', 'guide_2',
+                'gene' = 'gene_1',
+                'n_cells_1', 'n_cells_2', 'n_deg_1', 'n_deg_2', 'total_deg', 'common_deg',
+                'cor_all', 'cor_all_deg_excl_target') %>%
+  mutate(total_cells = n_cells_1 + n_cells_2) 
+df4plot$min_cells <- as.numeric(apply(df4plot, 1, FUN = function(x){min(c(x[4], x[5]))}))
+
+ggplot(df4plot %>%
+         filter(n_cells_1 > 15 & n_cells_2 > 15 & total_deg > 20), aes(x = cor_all_deg_excl_target)) + 
+  xlab("Correlation") + ylab("") + 
+  geom_density() + theme_bw()
+
+```
+
+# Correlation vs. # of Cells
+
+```{r, echo = F}
+
+min_cell_cutoffs <- 1:50
+cor_by_min_cell_cutoff <- mapply(min_cell_cutoffs, FUN = function(min_cell_cutoff){
+  df <- df4plot %>% filter(min_cells > min_cell_cutoff)
+  mean_cor_all <- mean(df$cor_all)
+  mean_cor_all_deg_excl_target <- mean(df %>% filter(!is.na(cor_all_deg_excl_target)) %>% .$cor_all_deg_excl_target)
+  return(c(mean_cor_all, mean_cor_all_deg_excl_target))
+})
+cor_by_min_cell_cutoff <- data.frame(
+  n_cell_cutoff = min_cell_cutoffs,
+  mean_cor_all = cor_by_min_cell_cutoff[1,],
+  mean_cor_all_deg = cor_by_min_cell_cutoff[2,]
+)
+
+```
+
+```{r cor_vs_n_cells_all_downstream, echo = F, warning = F, fig.width = 6, fig.height =4}
+ggplot(cor_by_min_cell_cutoff, aes(x = n_cell_cutoff, y = mean_cor_all)) + 
+  xlab("Minimum # of Cells") + ylab("Mean Correlation (all Downstream Genes)") + 
+  geom_point(size = 0.4) + theme_bw()
+
+```
+
+```{r cor_vs_n_cells_deg_only, echo = F, warning = F, fig.width = 6, fig.height =4}
+ggplot(cor_by_min_cell_cutoff, aes(x = n_cell_cutoff, y = mean_cor_all_deg)) + 
+  xlab("Minimum # of Cells") + ylab("Mean Correlation (DEG only, excl. Target)") + 
+  geom_point(size = 0.4) + theme_bw()
+```
+
+
+# Correlation vs. # of DEG
+
+
+```{r, echo = F}
+
+min_deg_cutoffs <- 1:50
+cor_by_min_cell_cutoff <- mapply(min_deg_cutoffs, FUN = function(min_deg_cutoff){
+  df <- df4plot %>% filter(total_deg > min_deg_cutoff)
+  mean_cor_all <- mean(df$cor_all)
+  mean_cor_all_deg_excl_target <- mean(df %>% filter(!is.na(cor_all_deg_excl_target)) %>% .$cor_all_deg_excl_target)
+  return(c(mean_cor_all, mean_cor_all_deg_excl_target))
+})
+cor_by_min_cell_cutoff <- data.frame(
+  n_cell_cutoff = min_cell_cutoffs,
+  mean_cor_all = cor_by_min_cell_cutoff[1,],
+  mean_cor_all_deg = cor_by_min_cell_cutoff[2,]
+)
+
+```
+
+```{r cor_vs_n_deg_all_downstream, echo = F, warning = F, fig.width = 6, fig.height =4}
+ggplot(cor_by_min_cell_cutoff, aes(x = n_cell_cutoff, y = mean_cor_all)) + 
+  xlab("Minimum # of DEG") + ylab("Mean Correlation (all Downstream Genes)") + 
+  geom_point(size = 0.4) + theme_bw()
+
+```
+
+```{r cor_vs_n_deg_deg_only, echo = F, warning = F, fig.width = 6, fig.height =4}
+ggplot(cor_by_min_cell_cutoff, aes(x = n_cell_cutoff, y = mean_cor_all_deg)) + 
+  xlab("Minimum # of DEG") + ylab("Mean Correlation (DEG only, excl. Target)") + 
+  geom_point(size = 0.4) + theme_bw()
+```
+
+# Per-gene Correlation
+
+## All Downstream Genes
+
+### Distribution of Correlation
+
+```{r cor_all_dist, echo = F, warning = F, fig.width = 8, fig.height = 4}
+df4plot <- cor_across_guides_by_gene %>%
+  dplyr::select(c('gene', 'n_cells', 'n_deg_excl_target', 'min_cor_all', 'max_cor_all')) %>%
+  reshape2::melt(id = c('gene', 'n_cells', 'n_deg_excl_target'))
+levels(df4plot$variable) <- c("Minimum Correlation", "Maximum Correlation")
+ggplot(df4plot, aes(x = value, fill = variable)) + 
+  xlab("Correlation Across Guides") + ylab("") + 
+  scale_fill_manual('', values = c("Minimum Correlation" = "pink", "Maximum Correlation" = 'cornflower blue')) + 
+  geom_density(size = 0.4, alpha = 0.4)+ theme_bw() + guides(col=guide_legend(title=""))
+```
+
+### Correlation vs. Number of Cells
+
+```{r cor_all_vs_num_cells, echo = F, warning = F, fig.width = 6, fig.height = 4}
+df4plot <- cor_across_guides_by_gene %>%
+  dplyr::select(c('gene', 'n_cells', 'n_deg_excl_target', 'min_cor_all', 'max_cor_all')) %>%
+  reshape2::melt(id = c('gene', 'n_cells', 'n_deg_excl_target'))
+levels(df4plot$variable) <- c("Minimum Correlation", "Maximum Correlation")
+ggplot(df4plot, aes(x = n_cells, y = value, col = variable)) + 
+  scale_x_log10() +
+  xlab("# of Cells") + ylab("Correlation Across Guides") + 
+  geom_point(size = 0.4, alpha = 0.4)+ theme_bw() + guides(col=guide_legend(title=""))
+```
+
+### Correlation vs. Effect Size
+
+```{r cor_all_vs_n_deg, echo = F, warning = F, fig.width = 6, fig.height = 4}
+df4plot <- cor_across_guides_by_gene %>%
+  dplyr::select(c('gene', 'n_cells', 'n_deg_excl_target', 'min_cor_all', 'max_cor_all')) %>%
+  reshape2::melt(id = c('gene', 'n_cells', 'n_deg_excl_target'))
+levels(df4plot$variable) <- c("Minimum Correlation", "Maximum Correlation")
+ggplot(df4plot, aes(x = n_deg_excl_target, y = value, col = variable)) + 
+  scale_x_log10() +
+  xlab("# Differentially Expressed Genes") + ylab("Correlation Across Guides") + 
+  geom_point(size = 0.4, alpha = 0.4)+ theme_bw() + guides(col=guide_legend(title=""))
+```
+
+## Some Examples
+
+### High Correlation, Lots of Cells
+
+```{r high_cor_high_cells, echo = F, warning = F, fig.width = 4.25, fig.height = 4}
+plot_guide_cor(target = "CTR9", guide_1 = "CTR9-TGGTCTTGACTGCCGCCCCG", guide_2 = "CTR9-AGAGCTCCAGCGGCGCCGCG")
+```
+
+### Low Correlation, Lots of Cells (No Signal)
+
+```{r low_cor_high_cells, echo = F, warning = F, fig.width = 4.25, fig.height = 4}
+plot_guide_cor(target = "UNC45A", guide_1 = "UNC45A-GGTGGCCGGCCGGGGCTCGG", guide_2 = "UNC45A-TGGACCACTCACAGTCATCG")
+```
+
+
+## Just the Differentially Expressed Genes
+
+```{r cor_deg_excl_target, echo = F, warning = F, fig.width = 8, fig.height = 4}
+df4plot <- cor_across_guides_by_gene %>%
+  dplyr::select(c('gene', 'n_cells', 'n_deg_excl_target', 'min_cor_all_deg_excl_target', 'max_cor_all_deg_excl_target')) %>%
+  reshape2::melt(id = c('gene', 'n_cells', 'n_deg_excl_target'))
+levels(df4plot$variable) <- c("Minimum Correlation", "Maximum Correlation")
+ggplot(df4plot, aes(x = value, fill = variable)) + 
+  xlab("Correlation Across Guides") + ylab("") + 
+  scale_fill_manual('', values = c("Minimum Correlation" = "pink", "Maximum Correlation" = 'cornflower blue')) + 
+  geom_density(size = 0.4, alpha = 0.4)+ theme_bw() + guides(col=guide_legend(title=""))
+```
+
+### Correlation vs. Number of Cells
+
+```{r cor_deg_vs_num_cells, echo = F, warning = F, fig.width = 6, fig.height = 4}
+df4plot <- cor_across_guides_by_gene %>%
+  dplyr::select(c('gene', 'n_cells', 'n_deg_excl_target', 'min_cor_all_deg_excl_target', 'max_cor_all_deg_excl_target')) %>%
+  reshape2::melt(id = c('gene', 'n_cells', 'n_deg_excl_target'))
+levels(df4plot$variable) <- c("Minimum Correlation", "Maximum Correlation")
+ggplot(df4plot, aes(x = n_cells, y = value, col = variable)) + 
+  scale_x_log10() +
+  xlab("# of Cells") + ylab("Correlation Across Guides") + 
+  geom_point(size = 0.4, alpha = 0.4)+ theme_bw() + guides(col=guide_legend(title=""))
+```
+
+### Correlation vs. Effect Size
+
+```{r cor_deg_vs_n_deg, echo = F, warning = F, fig.width = 6, fig.height = 4}
+df4plot <- cor_across_guides_by_gene %>%
+  dplyr::select(c('gene', 'n_cells', 'n_deg_excl_target', 'min_cor_all_deg_excl_target', 'max_cor_all_deg_excl_target')) %>%
+  reshape2::melt(id = c('gene', 'n_cells', 'n_deg_excl_target'))
+levels(df4plot$variable) <- c("Minimum Correlation", "Maximum Correlation")
+ggplot(df4plot, aes(x = n_deg_excl_target, y = value, col = variable)) + 
+  scale_x_log10() +
+  xlab("# Differentially Expressed Genes") + ylab("Correlation Across Guides") + 
+  geom_point(size = 0.4, alpha = 0.4)+ theme_bw() + guides(col=guide_legend(title=""))
+```
+
+
+## Some Examples
+
+### High Correlation, DE limited a few genes
+
+The correlation is mainly driven by down-regulation of the target, but this suggests the target was working.
+
+```{r high_cor_deg_only, fig.width = 4.25, fig.height = 4, echo = F, warning = F}
+limited_high_effect <- cor_across_guides_by_gene %>%
+  filter(!(is.infinite(max_cor_all_deg_excl_target)) & n_deg_excl_target > 20) %>%
+  mutate(d_cor = max_cor_all_deg_excl_target - max_cor_all) %>%
+  arrange(d_cor) %>%
+  slice_min(d_cor, n = 15)
+highest_change <- filter(cor_across_guides, gene_1 == "PHB")
+plot_guide_cor(target = "PHB", guide_1 = "PHB-ATGCGCAGTATGTGTGGTTG", guide_2 = "PHB-TGGAAGCAGGTGAGAATGGA")
+```
+
+
+### Low Correlation, Lots of Cells (Bad Guide)
+
+
+```{r bad_guide, fig.width = 15, fig.height = 4.5, echo = F, warning = F}
+limited_high_effect <- cor_across_guides_by_gene %>%
+  filter(!(is.infinite(max_cor_all_deg_excl_target)) & n_deg_excl_target > 20) %>%
+  mutate(d_cor = max_cor_all - min_cor_all) %>%
+  arrange(d_cor) %>%
+  slice_max(d_cor, n = 15)
+highest_change <- filter(cor_across_guides, gene_1 == "MRPL30")
+tg <- "MRPL30"
+guides <- guide_res_split[[tg]] %>% .$guide %>% unique() %>%
+    gsub(pattern = "_", replacement = '-') %>% combn(m = 2)
+plotlist <- apply(guides, 2, FUN = function(x){
+      plot_guide_cor(target = tg, guide_1 = x[1], guide_2 = x[2])
+    })
+    print(ggarrange(plotlist = plotlist, nrow = 1))
+```
+
+
+### Low Correlation, Lots of Cells and Total Signal (Weird Targets)
+
+There are still some badly behaved genes. Highlight those with more than 20 DEG and max correlation (DEG only) under 0.3.
+
+```{r inconsistent_knockdowns, echo = F, warning = F, fig.width = 15, fig.height = 5}
+inconsistent_knockdowns <- filter(cor_across_guides_by_gene, n_deg_excl_target > 20 & max_cor_all_deg_excl_target < 0.3) %>%
+  mutate(d3_lfc = target_meta$pre_day3_lfc_mean[match(gene, target_meta$gene)])
+
+for (tg in inconsistent_knockdowns$gene){
+  #print(tg)
+  guides <- guide_res_split[[tg]] %>% .$guide %>% unique() %>%
+    gsub(pattern = "_", replacement = '-') %>% combn(m = 2)
+  if (dim(guides)[2] == 1){
+    plotlist <- plot_guide_cor(target = tg, guide_1 = guides[1], guide_2 = guides[2])
+    print(plotlist)
+  } else {
+    plotlist <- apply(guides, 2, FUN = function(x){
+      plot_guide_cor(target = tg, guide_1 = x[1], guide_2 = x[2])
+    })
+    print(ggarrange(plotlist = plotlist, nrow = 1))
+  }
+  
+
+}
+
+```
+
+
+
+```{r sessionInfo}
+sessionInfo()
+```
+

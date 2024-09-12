@@ -1,0 +1,214 @@
+---
+title: "The Cytosolic Ribosome"
+author: "Claudia Feng"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "12c_highly_correlated_downstream_genes"
+  complex_of_interest : "apoptosis_tp53"
+  experiment_name : "Magpie"
+---
+
+```{r, echo = F}
+HomeFolder <- params$home_folder
+ExperimentName <- params$experiment_name
+date <- params$date
+section_name <- params$section_name
+network_of_interest <- params$network_of_interest
+```
+
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = paste0(plotsdir, "/", tolower(gsub( x = params$complex_of_interest, pattern = " ", replacement = '_')), "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+ 
+# Genes Clustered Together in UMAP
+
+## UMAP
+
+```{r highlighted_umap, warning = F, echo = F, fig.width = 6, fig.height = 6 }
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        col = ifelse(umap_1 < 1.75 & umap_1 > 1 & umap_2 > 2 & umap_2 < 2.75, "y", "n"))) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  scale_color_manual(values = c('y' = 'red', 'n' = 'gray')) + 
+  geom_point(size = 0.4) + theme_bw()  + theme(legend.position = 'none')
+
+```
+ 
+
+# Zoom In
+
+```{r zoomed_in_umap, warning = F, echo = F, fig.width = 6, fig.height = 6 }
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        label = gene)) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  xlim(c(1, 1.75)) + ylim(c(2, 2.75)) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  geom_point() + theme_bw() 
+
+```
+
+All genes in the UMAP cluster:
+
+```{r, echo = F}
+
+genes_of_interest <- c("RPS27L", "TRAIP1", "BBC3", "BBS9", "BAX", "DDB2", "FDXR", "MDM2", "TIGAR", "TNFRSF10B", "IKBIP", "RRM2B", "DUSP14", "TM7SF3", "UFM1")
+print("Downstream genes in UMAP cluster:")
+print(genes_of_interest)
+
+```
+
+# Add in Highly Correlated Genes
+
+## Distribution of Correlations
+
+```{r umap_cluster_heatmap, echo = F, fig.width = 6, fig.height=6}
+
+df4heatmap <- magpie_lfcs_by_downstream[genes_of_interest] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc")) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target') %>%
+  cor()
+print(my_heatmap(df4heatmap,
+           treeheight_row = 0, treeheight_col = 0, min_c = -1, max_c = 1))
+
+```
+
+Distribution of Correlations:
+
+```{r clust_cor_dist, echo = F, fig.width = 7, fig.height = 4}
+correlated_genes <- filter(downstream_downstream_cor,
+                           (downstream_gene_1 %in% genes_of_interest & downstream_gene_2 %in% genes_of_interest) & downstream_gene_1 < downstream_gene_2 )
+
+dens <- density(correlated_genes$cor)
+mean_cor = optimize(approxfun(dens$x, dens$y), interval = c(0.2, 0.3))$min
+ggplot(correlated_genes, aes(x = cor)) + 
+  xlab("Correlation within UMAP Cluster") + ylab("") + 
+  geom_density() + 
+  geom_vline(xintercept = mean_cor, lty = 3, col = 'red') + 
+  annotate("text", x=mean_cor, y=0.25, label= paste0("Correlation cutoff: ", round(mean_cor, 4))) + 
+  theme_bw()
+```
+
+Add in some other genes that weren't in the UMAP but are still highly correlated:
+
+```{r, echo = F}
+
+correlated_genes <- filter(downstream_downstream_cor,
+                           (downstream_gene_1 %in% genes_of_interest | downstream_gene_2 %in% genes_of_interest) & abs(cor) > mean_cor )
+correlated_genes <- unique(c(correlated_genes$downstream_gene_1, correlated_genes$downstream_gene_2))
+correlated_genes <-correlated_genes[which(!(correlated_genes %in% genes_of_interest))]
+print(paste0("Adding ", length(correlated_genes), " genes:"))
+print(correlated_genes)
+
+```
+
+Heatmap of current genes:
+
+```{r heatmap_with_correlated_genes, fig.width = 6, fig.height = 6, echo = F}
+
+df4heatmap <- magpie_lfcs_by_downstream[c(genes_of_interest, correlated_genes)] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc")) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target') %>%
+  cor()
+print(my_heatmap(df4heatmap,
+           treeheight_row = 0, treeheight_col = 0, min_c = -1, max_c = 1))
+```
+
+# Genes that Up/Downregulate these genes
+
+```{r, echo = F}
+targets_that_de <- magpie_lfcs_by_downstream[c(genes_of_interest, correlated_genes)] %>%
+  bind_rows() %>% as.data.frame() %>%
+  filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  .$target %>% table()
+targets_that_de <- data.frame(
+  target = names(targets_that_de),
+  num_targets_of_interest = as.numeric(targets_that_de),
+  num_targets_total = target_meta$n_downstream_excl_target[match(names(targets_that_de), target_meta$gene)],
+  is_tf = names(targets_that_de) %in% tfs$source
+) %>%
+  mutate(frac_targets_of_interest = num_targets_of_interest/num_targets_total) %>%
+  filter(num_targets_total > 3) %>% 
+  arrange(desc(frac_targets_of_interest)) %>%
+  slice_max(frac_targets_of_interest, n = 10) %>% 
+  dplyr::select(c("target",
+                  "num_targets_of_interest",
+                  "num_targets_total"))
+names(targets_that_de) <- c("Target", "Apoptosis Genes Perturbed by Target", "Number of Downstream DEG")
+knitr::kable(targets_that_de)
+
+```
+
+Adding the following genes:
+
+```{r, echo = F}
+targets_that_de <- targets_that_de$Target
+print(paste0("Adding ", length(targets_that_de), " genes:"))
+print(targets_that_de)
+```
+
+Also, I feel like it's worth adding in TP53.
+
+Check if there any other up-stream genes:
+
+```{r}
+
+targets_that_de_2 <- magpie_lfcs_by_downstream[targets_that_de] %>%
+  bind_rows() %>% as.data.frame() %>%
+  filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  .$target %>% table()
+
+```
+
+# Final selection
+
+
+
+```{r target_downstream_heatmap, message = F, warning = F, fig.width = 8, fig.height = 4, echo = F}
+
+df4heatmap <- magpie_lfcs_by_downstream[c(genes_of_interest, correlated_genes)] %>% bind_rows() %>% as.data.frame() %>%
+  filter(target %in% c(targets_that_de, "TP53")) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc")) %>%
+  reshape2::dcast(target ~ downstream_gene_name) %>%
+  column_to_rownames('target')
+my_heatmap(df4heatmap, midpoint = 0, treeheight_row = 0, treeheight_col = 0)
+genes_to_consider <-data.frame(
+  gene = c(genes_of_interest, correlated_genes, targets_that_de, "TP53"),
+  reason = c(rep("in umap cluster", length(genes_of_interest)),
+             rep("highly correlated deg", length(correlated_genes)),
+             rep("target that perturbs", length(targets_that_de)),
+             "tp53"
+  )
+)
+genes_to_consider <- genes_to_consider[!(duplicated(genes_to_consider$gene)),]
+fwrite(genes_to_consider, paste0(outdir, '/', params$date, "_apoptosis_genes.tsv"), sep  = '\t')
+```
+
+## UMAP
+
+```{r highlighted_umap_all, warning = F, echo = F, fig.width = 6, fig.height = 6 }
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        col = ifelse(gene %in% genes_to_consider$gene, 'y', 'n'))) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  scale_color_manual(values = c('y' = 'red', 'n' = 'gray')) + 
+  geom_point(size = 0.4) + theme_bw()  + theme(legend.position = 'none')
+
+```
+
+# Session info
+
+```{r session_info}
+sessionInfo()
+```

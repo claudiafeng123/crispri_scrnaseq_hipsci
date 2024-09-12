@@ -1,0 +1,522 @@
+---
+title: "How similar are the transcriptomic changes within a co-essentiality module?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "11d_target_target_cor"
+  analysis_name : "11c_02_deconvoluting_signal_from_glm_coessentiality_modules"
+---
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = file.path(plotsdir, params$analysis_name, "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+
+# Similarity Across Modules
+
+```{r, warning=FALSE, message=FALSE, echo = F}
+df4plot <- coessentiality_cor %>%
+  mutate(frac_common_deg = common_deg/total_deg) %>%
+  mutate(status = ifelse(is_coessentiality_module_pair == T, 1, 2)) %>%
+  select(c("gene_1", "gene_2", "total_deg", "common_deg", "frac_common_deg", "cor_all", "cor_all_deg", "cor_common_deg",  "status"))
+df4plot$status <- factor(df4plot$status)
+levels(df4plot$status) <- c("Co-essential", "Not Co-essential")
+```
+
+## Correlation
+
+### All Downstream Genes
+
+```{r cor_all_genes, echo = F, fig.width = 6, fig.height = 4}
+ggplot(df4plot, aes(x = cor_all, fill = status)) + 
+  scale_fill_manual(" ", values = c("Not Co-essential" = "gray", "Co-essential" = "red")) + 
+  xlab("Correlation (All Downstream Genes)") + ylab("Density") + 
+  geom_density(alpha = 0.4) + theme_bw()
+```
+
+Number of Pairs considered:
+
+```{r, echo = F}
+dim(df4plot)[1]
+
+table(df4plot$status)
+```
+
+Difference in means:
+
+```{r, echo = F}
+t.test(df4plot$cor_all[which(df4plot$status == "Co-essential")], df4plot$cor_all[which(df4plot$status == "Not Co-essential")], alternative = "greater")$p.value
+```
+
+### DEG Only
+
+```{r cor_all_deg_genes, echo = F, fig.width = 6, fig.height = 4}
+ggplot(df4plot %>% filter(total_deg > 10), aes(x = cor_all_deg, fill = status)) + 
+  scale_fill_manual(" ", values = c("Not Co-essential" = "gray", "Co-essential" = "red")) + 
+  xlab("Correlation (DEG only, > 10 Common DEG)") + ylab("Density") + 
+  geom_density(alpha = 0.4) + theme_bw()
+```
+
+Number of Pairs considered:
+
+```{r, echo = F}
+dim(df4plot %>% filter(total_deg > 10))[1]
+
+table(df4plot %>% filter(total_deg > 10) %>% .$status)
+```
+
+Difference in means:
+
+```{r, echo = F}
+t.test(df4plot  %>% filter(total_deg > 10) %>% .$cor_all[which(df4plot$status == "Co-essential")], df4plot  %>% filter(total_deg > 10) %>% .$cor_all[which(df4plot$status == "Not Co-essential")], alternative = "greater")$p.value
+```
+
+
+## Fraction of Common DE Genes
+
+
+```{r frac_common_deg, echo = F, fig.width = 6, fig.height = 4}
+ggplot(df4plot, aes(x = frac_common_deg, fill = status)) + 
+  scale_fill_manual(" ", values = c("Not Co-essential" = "gray", "Co-essential" = "red")) + 
+  xlab("Fraction of Common DEG") + ylab("Density") + 
+  geom_density(alpha = 0.4) + theme_bw()
+```
+
+Number of Pairs considered:
+
+```{r, echo = F}
+dim(df4plot)[1]
+
+table(df4plot$status)
+```
+
+Difference in means:
+
+```{r, echo = F}
+t.test(df4plot$frac_common_deg[which(df4plot$status == "Co-essential")], df4plot$frac_common_deg[which(df4plot$status == "Not Co-essential")], alternative = "greater")$p.value
+```
+
+Well that crashed and burned. Onward.
+
+# Top Hits
+
+
+Highest correlated pairs that aren't in the same complex.
+
+```{r, echo = F}
+coessentiality_cor %>%
+  select("gene_1", "gene_2", "cor_all", "cor_all_deg", "num_common_gprofiler_annotations") %>%
+  slice_max(abs(cor_all), n = 25) %>%
+  knitr::kable()
+```
+
+The top pairs are the previously found C1orf159-Paf1 relation and also OCT4+ friends. There's also splicing-related genes that aren't in Omnipath's splicing complex, but already found.
+
+
+Highest correlated pairs that are in the same co-essentiality module, but don't aren't in the same protein complex.
+
+```{r, echo = F}
+coessentiality_cor %>%
+  filter(is_coessentiality_module_pair == T) %>%
+  select("gene_1", "gene_2", "cor_all", "cor_all_deg", "num_common_gprofiler_annotations") %>%
+  slice_max(abs(cor_all), n = 25) %>%
+  knitr::kable()
+```
+
+When filtering for genes that are in the same co-essentiality module, it's mainly the splicing genes that pop up (probably some splicing co-essentiality modules). Replogle's C7orf26 crown jewel was already in a co-essentiality complex with the integrator complex. Novel my butt.
+
+# Overlap with Protein Complexes
+
+```{r, echo = F}
+
+#min_n_deg <- 5
+abs_cutoff <- 0.2
+
+coess_cor_df <- mapply(module_ind = module_meta$`Module #`, FUN = function(module_ind){
+  #print(module_ind)
+  genes_in_module <- sort(coessentiality_modules[[paste0("Module: ", module_ind)]])
+  
+  ## calculate number of protein complex pairs
+  module_complex_pairs <- complex_pairs %>% filter(gene_1 %in% genes_in_module & gene_2 %in% genes_in_module)
+  
+  ## 
+  #mean correlation
+  module_cor <- filter(coessentiality_cor, gene_1 %in% genes_in_module & gene_2 %in% genes_in_module) %>% .$cor_all 
+  mean_cor_all_downstream = mean(abs(module_cor))
+  num_pairs_with_high_cor_all_downstream = length(which(abs(module_cor) > abs_cutoff))
+  
+  module_cor <- filter(coessentiality_cor, gene_1 %in% genes_in_module & gene_2 %in% genes_in_module) %>% .$cor_all_deg 
+  mean_cor_all_deg = mean(abs(module_cor))
+  num_pairs_with_high_cor_all_deg = length(which(abs(module_cor) > abs_cutoff))
+  
+       rtn <- data.frame(
+        module = module_ind,
+        num_genes = length(genes_in_module),
+        mean_cor_all_downstream = mean_cor_all_downstream,
+        num_pairs_with_high_cor_all_downstream = num_pairs_with_high_cor_all_downstream,
+        mean_cor_all_deg = mean_cor_all_deg,
+        num_pairs_with_high_cor_all_deg = num_pairs_with_high_cor_all_deg,
+        complex_pair = dim(module_complex_pairs)[1]
+      )
+       
+   return(rtn)
+}, SIMPLIFY = F)
+coess_cor_df <- as.data.frame(bind_rows(coess_cor_df))
+coess_cor_df <- coess_cor_df %>%
+  mutate(frac_complex_pairs = complex_pair/(num_genes*(num_genes-1)/2))
+
+```
+
+
+There isn't an overwhelming pattern of protein complexes driving correlation. I imagine that there's some noise around low correlations and it's hard to actually distinguish the real signal here. However, you can see there's a group of modules driven by complex that are also highly correlated.
+
+```{r frac_pairs_vs_mean_cor, fig.width = 12, fig.height = 5.5, echo = F, warning = F, message = F}
+p1 <- ggplot(coess_cor_df, aes(x = frac_complex_pairs, y = mean_cor_all_downstream,
+                         label = ifelse(frac_complex_pairs > 0.5 | mean_cor_all_downstream > 0.1, paste0("Module #", module), ""))) + 
+  #ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  scale_x_log10() +
+  xlab("Fraction of Pairs with a Common Protein Complex") + ylab("Mean Correlation (All Downstream Genes)") + 
+  geom_point() + theme_bw()
+p2 <- ggplot(coess_cor_df, aes(x = frac_complex_pairs, y = mean_cor_all_deg,
+                         label = paste0("Module #", module))) + 
+  #ggrepel::geom_text_repel() + 
+  scale_x_log10() +
+  xlab("Fraction of Pairs with a Common Protein Complex") + ylab("Mean Correlation (DEGs)") + 
+  geom_point() + theme_bw()
+ggarrange(p1, p2, nrow = 1)
+##p2
+```
+
+Changing the metric changes things and it looks like protein complexes drives a lot of the co-essentiality modules:
+
+```{r frac_complex_pairs_vs_high_cor, fig.width = 6.5, fig.height = 6, warning = F, message = F, echo = F}
+ggplot(coess_cor_df, aes(x = frac_complex_pairs, y = (num_pairs_with_high_cor_all_downstream)/(num_genes*(num_genes-1)/2),
+                         label = paste0("Module #", module))) + 
+  #ggrepel::geom_text_repel() + 
+  scale_x_log10() + scale_y_log10() + 
+  xlab("Fraction of Pairs with a Common Protein Complex") + ylab("Fraction of Pairs with Cor > 0.2") + 
+  geom_point() + theme_bw()
+```
+
+
+# Stand-out Modules
+
+```{r complexes_driving_correlation_mean_cor_labeled, echo = F, warning = F, message = F, fig.width = 12.5, fig.height = 12}
+ggplot(coess_cor_df, aes(x = frac_complex_pairs, y = mean_cor_all_downstream,
+                         label = ifelse(frac_complex_pairs > 0.5 | mean_cor_all_downstream > 0.1, paste0("Module #", module), ""))) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  #scale_x_log10() +
+  xlab("Fraction of Pairs with a Common Protein Complex") + ylab("Mean Correlation (All Downstream Genes)") + 
+  geom_point() + theme_bw()
+```
+
+```{r complexes_driving_correlation_frac_high_cor_labeled, echo = F, warning = F, message = F, fig.width = 12.5, fig.height = 12}
+ggplot(coess_cor_df, aes(x = frac_complex_pairs, y = (num_pairs_with_high_cor_all_downstream)/(num_genes*(num_genes-1)/2),
+                         label = paste0("Module #", module))) + 
+  ggrepel::geom_text_repel() + 
+  scale_x_log10() + scale_y_log10() + 
+  xlab("Fraction of Pairs with a Common Protein Complex") + ylab("Fraction of Pairs with Cor > 0.2") + 
+  geom_point() + theme_bw()
+```
+
+```{r, echo = F, message = F}
+coess_double_heatmap <- function(module_no, de_genes_only = F){
+  module_ind <- which(module_meta$`Module #` == module_no)
+  genes_in_module <- coessentiality_modules[[module_ind]]
+   downstream_de_genes <- magpie_lfcs_split[genes_in_module] %>% 
+      bind_rows() %>%
+      as.data.frame() %>% 
+      filter(pval_adj  < sig_pval_thresh) %>%
+      .$downstream_gene_name %>% unique()
+    
+genes_in_module <- sort(coessentiality_modules[[module_ind]])
+#genes_in_module <- genes_in_module[which(genes_in_module %in% off_target$off_target_gene)]
+if (de_genes_only == T){
+  module_cor <- magpie_lfcs_split[genes_in_module] %>% 
+  bind_rows() %>%
+  as.data.frame() %>% 
+  filter(downstream_gene_name %in% downstream_de_genes) %>%
+  select(c('target', 'downstream_gene_name', "lfc")) %>%
+  reshape2::dcast(downstream_gene_name ~ target, value.var = 'lfc') %>%
+  column_to_rownames("downstream_gene_name") %>%
+  cor() %>% abs() 
+
+} else {
+  module_cor <- magpie_lfcs_split[genes_in_module] %>% 
+  bind_rows() %>%
+  as.data.frame() %>% 
+  #filter(downstream_gene_name %in% downstream_de_genes) %>%
+  select(c('target', 'downstream_gene_name', "lfc")) %>%
+  reshape2::dcast(downstream_gene_name ~ target, value.var = 'lfc') %>%
+  column_to_rownames("downstream_gene_name") %>%
+  cor() %>% abs() 
+
+}
+complex_membership <- matrix(0, nrow = length(genes_in_module), ncol = length(genes_in_module))
+row.names(complex_membership) <- colnames(complex_membership) <- genes_in_module
+## members of the same protein complex
+complex_pairs_by_target <- complex_pairs %>% filter(gene_1 %in% genes_in_module & gene_2 %in% genes_in_module)
+#off_target_pairs_by_target <- complex_pairs %>% filter(gene_1 %in% genes_in_module & gene_2 %in% genes_in_module)
+if (dim(complex_pairs_by_target)[1] > 0){
+  for (i in 1:dim(complex_pairs_by_target)[1]){
+    complex_membership[complex_pairs_by_target$gene_1[i], complex_pairs_by_target$gene_2[i]] <- complex_membership[complex_pairs_by_target$gene_2[i], complex_pairs_by_target$gene_1[i]] <- 1
+  }
+}
+
+if (de_genes_only == T){
+  p <- double_heatmap(module_cor, complex_membership, min_c = -1, max_c = 1, midpoint = 0,
+                          main = paste0("Module #", module_no, ": ", length(downstream_de_genes), " de genes"),
+                          show_rownames = (length(genes_in_module) < 100), show_colnames = (length(genes_in_module) < 100))
+      
+} else {
+  p <- double_heatmap(module_cor, complex_membership, 
+                    min_c = -1, max_c = 1, midpoint = 0,
+                    main = paste0("Module #", module_no),
+                    show_rownames = (length(genes_in_module) < 100), show_colnames = (length(genes_in_module) < 100))
+}
+
+}
+
+plot_scatter <- function(t1, t2){
+  df4plot <- data.frame(
+  g1 = magpie_lfcs_split[[t1]] %>% .$lfc,
+  g2 = magpie_lfcs_split[[t2]] %>% .$lfc,
+  is_de = as.character(magpie_lfcs_split[[t2]] %>% .$pval_adj < sig_pval_thresh | magpie_lfcs_split[[t1]] %>% .$pval_adj < sig_pval_thresh )
+)
+p <- ggplot(df4plot, aes(x = g1, y = g2, col = is_de)) + 
+  scale_color_manual(values = c("TRUE" = "red", "FALSE" = "gray")) + 
+  xlab(t1) +  ylab(t2) +
+  geom_point(alpha = 0.5) + theme_bw() + theme(legend.position = 'none')
+return(p)
+}
+```
+
+## Correlation Not Driven by Complex
+
+### Module 4094 (N6-methyladenosine methyltransferase complex)
+
+All genes are involved in RNA N6-methyladenosine methyltransferase complex.
+
+```{r heatmaps_4094, echo = F, message = F, warning = F, fig.width = 4.5, fig.height = 4}
+coess_double_heatmap(module_no = 4094)
+coess_double_heatmap(4094, de_genes_only = T)
+```
+
+See if the expression is in fact correlated:
+
+```{r scatter_methyltransferase, echo = F, message = F, warning = F, fig.width = 5, fig.height = 5}
+plot_scatter("METTL14", "ZC3H13")
+```
+
+### Modules 262 and 2108 (Cholesterol Biosynthesis)
+
+The following genes are involved in cholesterol biosynthesis. 
+
+```{r, echo = F, message = F, warning = F, fig.width = 4.5, fig.height = 4}
+coess_double_heatmap(262)
+coess_double_heatmap(262, de_genes_only = T)
+```
+
+```{r, echo = F, message = F, warning = F, fig.width = 4.5, fig.height = 4}
+coess_double_heatmap(2108)
+coess_double_heatmap(2108, de_genes_only = T)
+```
+
+
+```{r scatter_cholesterol_biosynthesis, echo = F, message = F, warning = F, fig.width = 5, fig.height = 5}
+p1 <- plot_scatter("FDFT1", "FDPS")
+p2 <- plot_scatter("MVD", "SQLE")
+p3 <- plot_scatter("ACACA", "FASN")
+p4 <- plot_scatter("LSS", "MSMO1")
+ggpubr::ggarrange(p1, p2, p3, p4, nrow = 2, ncol = 2)
+```
+
+
+
+
+
+## Correlation from Related Complexes
+
+Co-essentiality modules also pick-up complexes that related. 
+
+### TAF/MED Complexes
+
+
+```{r, echo = F, message = F, warning = F, fig.width = 12.5, fig.height = 12}
+coess_double_heatmap(154, de_genes_only = T)
+coess_double_heatmap(154, de_genes_only = T)
+```
+
+
+
+```{r, echo = F, message = F, warning = F, fig.width = 4.5, fig.height = 4}
+coess_double_heatmap(137, de_genes_only = T)
+coess_double_heatmap(137, de_genes_only = T)
+
+module_no <- 137
+module_ind <- which(module_meta$`Module #` == module_no)
+
+genes_in_module <- sort(coessentiality_modules[[module_ind]])
+#genes_in_module <- genes_in_module[which(genes_in_module %in% off_target$off_target_gene)]
+ downstream_de_genes <- magpie_lfcs_split[genes_in_module] %>% 
+      bind_rows() %>%
+      as.data.frame() %>% 
+      filter(pval_adj  < sig_pval_thresh) %>%
+      .$downstream_gene_name %>% unique()
+    
+ module_cor <- magpie_lfcs_split[genes_in_module] %>% 
+  bind_rows() %>%
+  as.data.frame() %>% 
+  #filter(downstream_gene_name %in% downstream_de_genes) %>%
+  select(c('target', 'downstream_gene_name', "lfc")) %>%
+  reshape2::dcast(downstream_gene_name ~ target, value.var = 'lfc') %>%
+  column_to_rownames("downstream_gene_name") %>%
+  cor() %>% abs() 
+complex_membership <- matrix(0, nrow = length(genes_in_module), ncol = length(genes_in_module))
+row.names(complex_membership) <- colnames(complex_membership) <- genes_in_module
+## members of the same protein complex
+complex_pairs_by_target <- complex_pairs %>% filter(gene_1 %in% genes_in_module & gene_2 %in% genes_in_module)
+#off_target_pairs_by_target <- complex_pairs %>% filter(gene_1 %in% genes_in_module & gene_2 %in% genes_in_module)
+if (dim(complex_pairs_by_target)[1] > 0){
+  for (i in 1:dim(complex_pairs_by_target)[1]){
+    complex_membership[complex_pairs_by_target$gene_1[i], complex_pairs_by_target$gene_2[i]] <- complex_membership[complex_pairs_by_target$gene_2[i], complex_pairs_by_target$gene_1[i]] <- 1
+  }
+}
+
+order1 <- hclust(dist(module_cor))$order
+gene_order <- colnames(module_cor)[order1]
+zoom_in <- gene_order[1:10]
+p <- double_heatmap(module_cor[zoom_in, zoom_in], complex_membership[zoom_in, zoom_in], 
+                    min_c = -0.5, max_c = 0.5, midpoint = 0,
+                    main = paste0(names(coessentiality_modules)[module_ind], ": ", length(downstream_de_genes), " de genes"),
+                    show_rownames = T, show_colnames = T)
+
+zoom_in <- gene_order[ (length(gene_order) - 15):length(gene_order)]
+p <- double_heatmap(module_cor[zoom_in, zoom_in], complex_membership[zoom_in, zoom_in], 
+                    min_c = -0.5, max_c = 0.5, midpoint = 0,
+                    main = paste0(names(coessentiality_modules)[module_ind], ": ", length(downstream_de_genes), " de genes"),
+                    show_rownames = T, show_colnames = T)
+
+
+```
+
+
+
+# Misc.
+
+## Module 122
+
+Some sort of the highlighted at the beginning and end. 
+
+```{r 122_double_heatmap, echo = F, warning = F, message = F, fig.width = 6, fig.height=6}
+coess_double_heatmap(122)
+
+module_no <- 122
+module_ind <- which(module_meta$`Module #` == module_no)
+
+genes_in_module <- sort(coessentiality_modules[[module_ind]])
+#genes_in_module <- genes_in_module[which(genes_in_module %in% off_target$off_target_gene)]
+ downstream_de_genes <- magpie_lfcs_split[genes_in_module] %>% 
+      bind_rows() %>%
+      as.data.frame() %>% 
+      filter(pval_adj  < sig_pval_thresh) %>%
+      .$downstream_gene_name %>% unique()
+    
+ module_cor <- magpie_lfcs_split[genes_in_module] %>% 
+  bind_rows() %>%
+  as.data.frame() %>% 
+  #filter(downstream_gene_name %in% downstream_de_genes) %>%
+  select(c('target', 'downstream_gene_name', "lfc")) %>%
+  reshape2::dcast(downstream_gene_name ~ target, value.var = 'lfc') %>%
+  column_to_rownames("downstream_gene_name") %>%
+  cor() %>% abs() 
+complex_membership <- matrix(0, nrow = length(genes_in_module), ncol = length(genes_in_module))
+row.names(complex_membership) <- colnames(complex_membership) <- genes_in_module
+## members of the same protein complex
+complex_pairs_by_target <- complex_pairs %>% filter(gene_1 %in% genes_in_module & gene_2 %in% genes_in_module)
+#off_target_pairs_by_target <- complex_pairs %>% filter(gene_1 %in% genes_in_module & gene_2 %in% genes_in_module)
+if (dim(complex_pairs_by_target)[1] > 0){
+  for (i in 1:dim(complex_pairs_by_target)[1]){
+    complex_membership[complex_pairs_by_target$gene_1[i], complex_pairs_by_target$gene_2[i]] <- complex_membership[complex_pairs_by_target$gene_2[i], complex_pairs_by_target$gene_1[i]] <- 1
+  }
+}
+
+order1 <- hclust(dist(module_cor))$order
+gene_order <- colnames(module_cor)[order1]
+zoom_in <- gene_order[1:10]
+p <- double_heatmap(module_cor[zoom_in, zoom_in], complex_membership[zoom_in, zoom_in], 
+                    min_c = -0.5, max_c = 0.5, midpoint = 0,
+                    main = paste0(names(coessentiality_modules)[module_ind], ": ", length(downstream_de_genes), " de genes"),
+                    show_rownames = T, show_colnames = T)
+
+zoom_in <- gene_order[ (length(gene_order) - 15):length(gene_order)]
+p <- double_heatmap(module_cor[zoom_in, zoom_in], complex_membership[zoom_in, zoom_in], 
+                    min_c = -0.5, max_c = 0.5, midpoint = 0,
+                    main = paste0(names(coessentiality_modules)[module_ind], ": ", length(downstream_de_genes), " de genes"),
+                    show_rownames = T, show_colnames = T)
+
+
+```
+
+Seems like this module covers splicing, the ARS genes and POLII. Interesting that the ARS genes and POLIII have similar effects I guess, but I'm not sure what to do from here. RNAPIII does snRNA, so that could explain the splicing connection.
+
+## Module 116
+
+Some sort of the highlighted at the beginning and end. 
+
+```{r 116_double_heatmap, echo = F, warning = F, message = F, fig.width = 6, fig.height=6}
+coess_double_heatmap(116)
+
+module_no <- 116
+module_ind <- which(module_meta$`Module #` == module_no)
+
+genes_in_module <- sort(coessentiality_modules[[module_ind]])
+#genes_in_module <- genes_in_module[which(genes_in_module %in% off_target$off_target_gene)]
+ downstream_de_genes <- magpie_lfcs_split[genes_in_module] %>% 
+      bind_rows() %>%
+      as.data.frame() %>% 
+      filter(pval_adj  < sig_pval_thresh) %>%
+      .$downstream_gene_name %>% unique()
+    
+ module_cor <- magpie_lfcs_split[genes_in_module] %>% 
+  bind_rows() %>%
+  as.data.frame() %>% 
+  #filter(downstream_gene_name %in% downstream_de_genes) %>%
+  select(c('target', 'downstream_gene_name', "lfc")) %>%
+  reshape2::dcast(downstream_gene_name ~ target, value.var = 'lfc') %>%
+  column_to_rownames("downstream_gene_name") %>%
+  cor() %>% abs() 
+complex_membership <- matrix(0, nrow = length(genes_in_module), ncol = length(genes_in_module))
+row.names(complex_membership) <- colnames(complex_membership) <- genes_in_module
+## members of the same protein complex
+complex_pairs_by_target <- complex_pairs %>% filter(gene_1 %in% genes_in_module & gene_2 %in% genes_in_module)
+#off_target_pairs_by_target <- complex_pairs %>% filter(gene_1 %in% genes_in_module & gene_2 %in% genes_in_module)
+if (dim(complex_pairs_by_target)[1] > 0){
+  for (i in 1:dim(complex_pairs_by_target)[1]){
+    complex_membership[complex_pairs_by_target$gene_1[i], complex_pairs_by_target$gene_2[i]] <- complex_membership[complex_pairs_by_target$gene_2[i], complex_pairs_by_target$gene_1[i]] <- 1
+  }
+}
+
+order1 <- hclust(dist(module_cor))$order
+gene_order <- colnames(module_cor)[order1]
+zoom_in <- gene_order[1:28]
+p <- double_heatmap(module_cor[zoom_in, zoom_in], complex_membership[zoom_in, zoom_in], 
+                    min_c = -0.5, max_c = 0.5, midpoint = 0,
+                    main = paste0(names(coessentiality_modules)[module_ind], ": ", length(downstream_de_genes), " de genes"),
+                    show_rownames = T, show_colnames = T)
+```
+
+# All Heatmaps
+
+```{r all_double_heatmaps, echo = F, echo = F, warning = F, message = F, fig.width = 6, fig.height=6}
+module_ind_order <- coess_cor_df$module[which(coess_cor_df$frac_complex_pairs > 0.01 & coess_cor_df$num_pairs_with_high_cor_all_deg/(coess_cor_df$num_genes*(coess_cor_df$num_genes - 1)/2) > 0.0001) ]
+for (m in module_ind_order){
+  coess_double_heatmap(m)
+}
+```
+

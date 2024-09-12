@@ -1,0 +1,97 @@
+---
+title: "What predicts the number of downstream genes of a target?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  utils_path: "../../io/Magpie_Utils.R"
+  io_path: "../../io/Magpie_io.R"
+  date: "2022-08-15"
+  section_name: "10a_number_of_DEGs"
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+# Generate Heatmap
+
+## Downstream Genes with Signal
+
+```{r, fig.width = 20, fig.height = 4, echo =F}
+#targets2consider <- unlist(pluripotency_tfs)
+downstreams2consider <- pluripotency_lfcs %>%
+  dplyr::filter(pval_adj < 0.1 & 
+                  abs(lfc) > 0.2) %>%
+  .$downstream_gene_name %>% as.character() %>%
+  table() %>% as.data.frame() %>%
+  dplyr::filter(Freq >=1) %>%
+  .$`.` %>% as.character()
+#downstreams2consider <- sort(unique(downstreams2consider, unlist(pluripotency_tfs)))
+
+df4heatmap <- pluripotency_lfcs %>%
+  dplyr::filter(downstream_gene_name %in% downstreams2consider) %>%
+  dplyr::select(c('genes_in_complex', 'downstream_gene_name', 'lfc', 'pval_adj')) %>%
+  #mutate(lfc = ifelse(pval_adj < 0.1, lfc, 0)) %>%
+  reshape2::dcast(genes_in_complex ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('genes_in_complex') %>%
+  as.matrix()
+
+my_heatmap(df4heatmap,
+           #treeheight_row=0, treeheight_col = 0,
+           min_c = -0.5, max_c = 0.5,
+           border_col = NA)
+```
+
+## Cluster Downstream Genes
+
+```{r, echo = F}
+fviz_nbclust(t(df4heatmap), kmeans, method = "silhouette")+
+  labs(subtitle = "Silhouette method")
+cluster_res <- hclust(dist(t(df4heatmap)))
+downstream_clust <- data.frame(
+  gene = colnames(df4heatmap),
+  cluster = factor(as.numeric(cutree(cluster_res, k = 2)))
+)
+```
+
+
+## Functional Enrichment of Clusters
+### Cluster 1
+
+These are the genes that are down-regulated upon OCT4 knockdown and up-regulated due to knockdown of MAX.
+
+Genes 
+
+
+
+```{r}
+cluster_1 <- downstream_clust %>%
+  dplyr::filter(cluster == 1) %>% .$gene
+#cluster_1_enrichment <- gprofiler2::gost(cluster_1)$result
+```
+
+Genes found to be uniquely expressed in iPSCs: https://www.nature.com/articles/s41598-020-66845-6. 
+
+```{r}
+ipsc_marker_genes <- c('MT1G', 'USP44', 'ESRG', 'SPP1', 'PTPRZ1', 'CRABP1', 'CNMD', 'THY1', 'VSNL1', 'HHLA1', 'SFRP2')
+length(which(ipsc_marker_genes %in% cluster_1))
+
+other_genes <- cluster_1[which(!(cluster_1 %in% ipsc_marker_genes))]
+represented_pathways <- lapply(msigdb_hallmark_pathways, FUN = function(l){
+  length(which(l %in% cluster_1))
+}) %>% unlist()
+represented_pathways <- represented_pathways[represented_pathways > 0]
+```
+
+### Cluster 2
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
+

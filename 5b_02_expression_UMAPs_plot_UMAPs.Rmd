@@ -1,0 +1,110 @@
+---
+title: "Generate overall UMAP plots of the data using all assigned cells"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  experiment_name : "Magpie"
+  perturbation_status : "all"
+  correction : "technical"
+  section_name: "5b_expression_UMAPs"
+  subsection_name : "5b_02_expression_UMAPs_plot_UMAPs"
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE}
+library(Cairo)
+knitr::opts_chunk$set(fig.path = paste0(plotsdir, '/'), dev=c("CairoPNG", "pdf"))
+```
+
+# By Inlet
+
+```{r umap_by_inlet, fig.width = 7, fig.height = 5, echo = F, warning = F, message = F}
+ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, 
+                    col = orig.ident)) + 
+  geom_point(size = 0.2, alpha = 0.2) + theme_bw() + theme(legend.position = 'none')
+```
+
+# By Cell line
+
+```{r umap_by_cell_line, fig.width = 9, fig.height = 5, echo = F, warning = F, message = F}
+ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, 
+                    col = cell_line)) + 
+  geom_point(size = 0.2, alpha = 0.2) + theme_bw()+
+  guides(col=guide_legend(title = 'Cell Line', override.aes = list(alpha = 1, size = 3))) + 
+  theme()
+```
+
+# By Donor
+
+```{r umap_by_donor, fig.width = 8, fig.height = 5, echo = F, warning = F, message = F}
+ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, 
+                    col = donor)) + 
+  geom_point(size = 0.2, alpha = 0.2) + theme_bw()+
+  guides(col=guide_legend(title = 'Donor', override.aes = list(alpha = 1, size = 3))) + 
+  theme()
+```
+# By Batch
+
+```{r umap_by_batch, fig.width = 8, fig.height = 5, echo = F, warning = F, message = F}
+if ("Batch" %in% names(df4plot)){
+  ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, 
+                    col = as.character(Batch))) + 
+  geom_point(size = 0.2, alpha = 0.2) + theme_bw()+
+  guides(col=guide_legend(title = 'Batch', override.aes = list(alpha = 1, size = 3))) + 
+  theme()
+}
+```
+
+# By Timepoint
+
+```{r umap_by_timepoint, fig.width = 8, fig.height = 5, echo = F, warning = F, message = F}
+if ("Timepoint" %in% names(df4plot)){
+  ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, 
+                    col = Timepoint)) + 
+  geom_point(size = 0.2, alpha = 0.2) + theme_bw()+
+  guides(col=guide_legend(title = 'Timepoint', override.aes = list(alpha = 1, size = 3))) + 
+  theme()
+}
+```
+
+# Pool
+
+```{r umap_by_pool, fig.width = 9, fig.height = 5, echo = F, warning = F, message = F}
+if ("Pool" %in% names(df4plot)){
+  ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, 
+                    col = Pool)) + 
+  geom_point(size = 0.2, alpha = 0.2) + theme_bw()+
+  guides(col=guide_legend(title = 'Pool', override.aes = list(alpha = 1, size = 3))) + 
+  theme()
+}
+```
+
+# Cell cycle phase
+
+```{r umap_by_cell_cycle_phase, fig.width = 9, fig.height = 5, echo = F, warning = F, message = F}
+ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, 
+                    col = Phase)) + 
+  geom_point(size = 0.2, alpha = 0.2) + theme_bw()+
+  guides(col=guide_legend(title = 'Cell cycle phase', override.aes = list(alpha = 1, size = 3))) + 
+  theme()
+```
+
+# Perturbation Status
+
+```{r umap_by_perturbation_status, fig.width = 9, fig.height = 5, echo = F, warning = F, message = F}
+if ('target_gene_name' %in% names(df4plot)){
+  ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, 
+                    col = ifelse(target_gene_name %in% c('unassigned', 'control'), 'Unperturbed', 'Perturbed'))) + 
+  geom_point(size = 0.2, alpha = 0.2) + theme_bw()+
+  scale_color_manual('Perturbation Status', values = c('Perturbed' = 'red', 'Unperturbed' = 'gray')) + 
+  guides(col=guide_legend(override.aes = list(alpha = 1, size = 3))) + 
+  theme()
+} 
+```
+
+# SessionInfo
+```{r, echo = F}
+sessionInfo()
+```
+

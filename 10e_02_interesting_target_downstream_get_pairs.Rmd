@@ -1,0 +1,201 @@
+---
+title: "Find interesting target-downstream pairs to look into further"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  section_name: "10e_find_interesting_target_downstream_pairs"
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE}
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+# eQTLs
+
+eQTLs are driven by two - just show the histogram and move on.
+
+# Things Not Observed in Replogle
+
+In total, we have 
+
+```{r, echo = F, warning = F, message = F}
+dim(lfcs_by_cell_type %>%
+  dplyr::filter(iPSC_pval_adj < sig_pval_thresh & abs(iPSC_lfc) > sig_abs_lfc_thresh))[1]
+```
+
+significant target-downstream DE pairs (FDR < 0.1, abs(LFC) < 0.1).
+
+Of these, 
+
+```{r, echo = F, warning = F, message = F }
+dim(new_de_pairs)[1]
+```
+
+are unique to iPSCs (FDR > 0.5 in genome-wide K562 screen and not screened in RPE1 or K562 essential screen, or FDR > 0.5 in genome-wide K562, essential K562 and RPE1 screen).
+
+## Enriched Target Genes
+
+```{r num_unique_pairs, fig.width = 7.5, fig.height = 7, echo = F, message = F, warning = F}
+df4plot <- as.data.frame(table(new_de_pairs$target)) %>%
+  mutate(n_deg = target_meta$n_downstream_excl_target[match(Var1, target_meta$gene)])
+scale_limits <- max(df4plot$n_deg)
+ggplot(df4plot, aes(y = Freq, x = n_deg, label = Var1)) +
+  xlim(c(0, scale_limits)) + ylim(c(0, scale_limits)) + 
+  ylab("# Pairs Unique to iPSCs") + xlab("# DE Downstream Genes in iPSCs") + 
+  ggrepel::geom_text_repel() + 
+  scale_x_log10() + scale_y_log10() + 
+  geom_point(size = 0.4) + 
+  geom_abline(slope = 1, col = 'gray', lty = 3) + theme_bw()
+```
+
+## Enriched Downstream Genes
+
+```{r num_unique_pairs, fig.width = 3, fig.height = 5, echo = F, message = F, warning = F}
+df4plot <- as.data.frame(table(new_de_pairs$downstream_gene_name)) %>%
+  slice_max(Freq, n = 10)
+ggplot(df4plot, aes(x = Freq, y = reorder(Var1, Freq))) +
+  ylab("# Pairs Unique to iPSCs") + xlab("Downstream Gene") + 
+  geom_bar(stat = 'identity') + theme_bw()
+```
+
+# An attempt at a network
+
+```{r, eval = F, echo = F, warning = F, message = F, fig.width = 20, fig.height=20}
+downstream_genes2include <- new_de_pairs %>% .$downstream_gene_name %>%
+  table() %>% as.data.frame() %>%
+  dplyr::filter(Freq > 6) %>% .$`.` %>% as.character()
+targets2include <- new_de_pairs %>%
+  dplyr::filter(downstream_gene_name %in% downstream_genes2include) %>%
+  .$target %>% table() %>% as.data.frame() %>%
+  dplyr::filter(Freq > 2) %>% .$`.` %>% as.character() %>% unique()
+all_genes2include <- sort(unique(c(targets2include, downstream_genes2include)))
+
+
+adj_mat4graph <- matrix(0, nrow = length(all_genes2include), ncol = length(all_genes2include))
+row.names(adj_mat4graph) <- colnames(adj_mat4graph) <- all_genes2include
+deg4graph <- lfcs_by_cell_type %>%
+  dplyr::filter(target %in% all_genes2include & downstream_gene_name %in% all_genes2include) %>%
+  dplyr::filter(iPSC_pval_adj < sig_pval_thresh & abs(iPSC_lfc) > sig_abs_lfc_thresh &
+                  target != downstream_gene_name)
+for (i in 1:dim(deg4graph)[1]){
+  adj_mat4graph[deg4graph$target[i], deg4graph$downstream_gene_name[i]] <- 1
+}
+g <- graph_from_adjacency_matrix(
+  adj_mat4graph
+)
+network_meta <- lfcs_by_cell_type %>%
+  dplyr::filter(target %in% all_genes2include & downstream_gene_name %in% all_genes2include) %>%
+  dplyr::mutate(sig_in_iPSC = (abs(iPSC_lfc) > sig_abs_lfc_thresh) & iPSC_pval_adj < sig_pval_thresh,
+                sig_in_K562 = (abs(K562_gwps_lfc) > sig_abs_lfc_thresh) & K562_gwps_pval_adj < sig_pval_thresh) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'sig_in_iPSC', 'sig_in_K562')) %>%
+  dplyr::filter(!is.na(sig_in_K562)) %>%
+  mutate(lwd = ifelse(sig_in_K562,'gray', 'maroon'),
+         lty = ifelse(sig_in_K562,3, 1)) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'lwd', 'lty'))
+plot(g, 
+     vertex.shape = 'none',
+     edge.width=2,
+     vertex.size = 10,
+     edge.color = network_meta$lwd,
+     edge.arrow.size=0.6)
+
+
+
+```
+
+
+Nope, too many genes.
+
+## Subset to Targets that are transcription factors
+
+```{r, fig.width = 20, fig.height = 20}
+
+target_genes2include <- new_de_pairs %>%
+  dplyr::filter(target %in% expressed_targets & target %in% tf_list$`HGNC symbol` & 
+                  downstream_gene_name %in% expressed_targets & downstream_gene_name %in% downstream_genes2include) %>%
+  .$target %>% table() %>% as.data.frame() %>%
+  dplyr::filter(Freq > 1) %>% .$`.` %>% as.character()
+downstream_genes2include <- new_de_pairs %>%
+  dplyr::filter(target %in% target_genes2include) %>%
+  .$downstream_gene_name %>% unique()
+genes2include <- sort(unique(c(target_genes2include, downstream_genes2include)))
+
+adj_mat4graph <- matrix(0, nrow = length(all_genes2include), ncol = length(all_genes2include))
+row.names(adj_mat4graph) <- colnames(adj_mat4graph) <- all_genes2include
+deg4graph <- lfcs_by_cell_type %>%
+  dplyr::filter(target %in% all_genes2include & downstream_gene_name %in% all_genes2include) %>%
+  dplyr::filter(iPSC_pval_adj < sig_pval_thresh & abs(iPSC_lfc) > sig_abs_lfc_thresh &
+                  target != downstream_gene_name)
+for (i in 1:dim(deg4graph)[1]){
+  adj_mat4graph[deg4graph$target[i], deg4graph$downstream_gene_name[i]] <- 1
+}
+g <- graph_from_adjacency_matrix(
+  adj_mat4graph
+)
+
+network_meta <- lfcs_by_cell_type %>%
+  dplyr::filter(target %in% genes2include & downstream_gene_name %in% genes2include) %>%
+  dplyr::filter(iPSC_pval_adj < sig_pval_thresh & abs(iPSC_lfc) > sig_abs_lfc_thresh &
+                  target != downstream_gene_name) %>%
+  dplyr::mutate(sig_in_K562 = (abs(K562_gwps_lfc) > sig_abs_lfc_thresh) & K562_gwps_pval_adj < sig_pval_thresh) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'iPSC_lfc', 'iPSC_pval_adj', 'sig_in_K562')) %>%
+  dplyr::filter(!is.na(sig_in_K562)) %>%
+  mutate(lwd = ifelse(sig_in_K562,'gray', 'maroon'),
+         lty = ifelse(sig_in_K562,3, 1)) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'lwd', 'lty'))
+
+claudia <- new_de_pairs %>%
+  dplyr::filter(downstream_gene_name == "TERF1")
+
+plot(g, 
+     vertex.shape = 'none',
+     edge.width=2,
+     vertex.size = 10,
+     edge.color = network_meta$lwd,
+     edge.arrow.size=0.6)
+
+
+
+
+```
+
+
+# Transcription Factors
+
+```{r, fig.width = 20, fig.height = 20}
+
+tfs2plot <- sort(unique(c(sig_ipscs_tfs_only$target, sig_ipscs_tfs_only$downstream_gene_name)))
+adj_mat4graph <- lfcs_by_cell_type %>%
+  dplyr::filter(target %in% tfs2plot & downstream_gene_name %in% tfs2plot) %>%
+  mutate(iPSC = ifelse(abs(iPSC_lfc) > sig_abs_lfc_thresh & iPSC_pval_adj < sig_pval_thresh & target != downstream_gene_name, 1, 0)) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'iPSC')) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'iPSC') %>%
+  column_to_rownames('target') %>% as.matrix()
+g <- graph_from_adjacency_matrix(
+  adj_mat4graph
+)
+plot(g, 
+     vertex.shape = 'none',
+     edge.width=2,
+     vertex.size = 10,
+     edge.color = network_meta$lwd,
+     edge.arrow.size=0.6)
+
+network_meta <- sig_ipscs_tfs_only %>%
+  mutate(lwd = ifelse(sig_in_K562,'gray', 'maroon'),
+         lty = ifelse(sig_in_K562,3, 1)) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'lwd', 'lty'))
+
+
+
+```
+
+# SessionInfo
+```{r, echo = F}
+sessionInfo()
+```
+

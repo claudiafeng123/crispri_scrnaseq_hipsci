@@ -1,0 +1,110 @@
+---
+title: "Variance due to CRISPR Efficacy"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE}
+library(Cairo)
+knitr::opts_chunk$set(fig.path = paste0(plotsdir, '/'), dev=c("CairoPNG", "pdf"))
+```
+
+# Genes Considered
+
+Considered genes with high expression (>0.5 in control) and large downstream effect (> 100 trans effects). In total, we considered:
+
+```{r, echo = F}
+paste0(length(targets_of_interest$gene), " targets")
+```
+
+
+# UMAPs
+
+## All Cells that we Considered
+
+```{r umap_all_targets, echo = F, fig.width = 6, fig.height = 6, warning = F, message = F}
+ggplot(umap_coords %>%
+         dplyr::filter(target != NonTargetGeneName), aes(x = UMAP_1, y = UMAP_2, 
+                        col = target)) + 
+  geom_point( size =0.5) + 
+  ylim(c(-4, 3)) + 
+  geom_point(data =umap_coords %>%
+               dplyr::filter(target == NonTargetGeneName), size = 0.2, alpha = 0.4, col = 'gray') +  
+  theme_bw() + theme(legend.position = 'bottom') +
+     guides(color = guide_legend(override.aes = list(size = 3), title = 'Target' ) )
+
+```
+
+## Just the Controls
+
+Mainly for reference
+```{r umap_of_control, echo=F, fig.height=6, fig.width=6, message=FALSE, warning=FALSE}
+
+ggplot(umap_coords %>%
+         dplyr::filter(target ==NonTargetGeneName), aes(x = UMAP_1, y = UMAP_2)) + 
+  geom_point( size =0.5, col = 'gray') + 
+  ylim(c(-4, 3)) + theme_bw()
+
+```
+
+## UMAPs by target
+
+```{r umaps_by_target, echo=F, fig.height=6, fig.width=6, message=FALSE, warning=FALSE}
+
+all_umaps_by_target <- mapply(tg = targets_of_interest$gene, FUN = function(tg){
+  p <- ggplot(umap_coords %>%
+         dplyr::filter(target ==tg), aes(x = UMAP_1, y = UMAP_2, 
+                        col = on_target_expr)) + 
+  geom_point( size =0.5) + 
+  ylim(c(-4, 3)) + 
+    scale_color_viridis_c(paste0("Expression of ", tg)) +
+  geom_point(data =umap_coords %>%
+               dplyr::filter(target == NonTargetGeneName), size = 0.2, alpha = 0.4, col = 'gray') +  
+  theme_bw() + theme(legend.position = 'bottom') 
+  return(p)
+}, SIMPLIFY = F)
+
+all_umaps_by_target
+
+```
+
+
+# Scatters
+
+Say something more general
+
+## Scatters per Knockdown
+
+```{r on_target_vs_effect_size_scatters_by_target, echo=F, fig.height=9, fig.width=12, message=FALSE, warning=FALSE}
+
+mean_effect_scatters_by_target <- mapply(tg = targets_of_interest$gene, FUN = function(tg){
+  p <- ggplot(umap_coords %>%
+         dplyr::filter(target == tg), aes(x = on_target_expr, y = abs_lfc_deg_mean)) + 
+  xlab("On-target Expression") + ylab("Effect Size") + ggtitle(tg) + 
+  geom_point(size = 0.4) + theme_bw()
+  return(p)
+}, SIMPLIFY = F)
+
+ggarrange(plotlist = mean_effect_scatters_by_target, ncol = 4, nrow = 3)
+
+```
+
+
+## Correlation between On-Target and Mean Effect Size
+
+```{r on_target_vs_effect_size_scatter, echo=F, fig.height=5, fig.width=5, message=FALSE, warning=FALSE}
+ggplot(umap_coords %>%
+         dplyr::filter(target != NonTargetGeneName), aes(x = on_target_expr, y = abs_lfc_deg_mean)) + 
+  xlab("On-target Expression") + ylab("Effect Size") + 
+  geom_point(size = 0.4) + #ggpointdensity::geom_pointdensity() + 
+  geom_smooth(method = "lm") + 
+  theme_bw()
+```
+
+# SessionInfo
+```{r, echo = F}
+sessionInfo()
+```
+

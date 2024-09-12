@@ -1,0 +1,160 @@
+---
+title: "Get Clusters to Aggregate"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "11d_target_target_cor"
+---
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = file.path(plotsdir, "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+
+Get a list of genes to aggregate, mainly in the form of protein complexes to compare to Replogle paper and also to be aggregated and correlated and then verified by Ally.
+
+
+
+# Clusters of Interest
+
+We have some previous complexes for which we aggregated.
+
+```{r}
+
+genes2aggregate <- list(
+    "OCT4 + Friends" = c("PRDM10", "PARD3B", "POU5F1B", "POU5F1", "RBPJ"),
+    #TFIIA wrapped into TFIID, one gene for TFIIB, no signal for TFIIC, no signal for TFIIE
+    "TFIID" = c("TAF5", "TAF1", "TAF8", "TAF3", "TAF10", "TAF4", "TAF11", "GTF2A1", "GTF2A2", "TAF2", "TAF13", "TAF7"),
+    "TFIIF" = c("GTF2F1", "GTF2F2"),
+    "TFIIH" = c("GTF2H4", "CCNH", "CDK7", "MNAT1", "ERCC3", "GTF2H2", "GTF2H3", "ERCC2", "GTF2H1"),
+    "Mediator complex" = c("MED1", "MED8", "MED29", "MED4", "MED10", "MED17", "MED18", "MED27", "MED9", "MED28", "MED7", "MED13", "MED11", "MED16", "MED15", "MED19", "MED24"),
+    "RNA Polymerase II" = c("POLR2G", "POLR2D", "POLR2F", "POLR2H", "POLR2I", "POLR2K", "POLR2J"),
+    "Paf complex" = c("CDC73", "WDR61", "RTF1", "CTR9", "PAF1"),
+    "Integrator complex, subunit 1" = c("INTS1", "INTS5", "INTS8", "INTS6", "INTS2", "INTS12"),
+    "Integrator complex, subunit 2" = c("INTS10", "C7orf26", "INTS13", "INTS14"),
+    "Integrator complex, subunit 3" = c("INTS3", "INTS4", "INTS11", "INTS9"),
+    "Spliceosome, tri-SNP complex" = c('DDX23', 'LSM2', 'LSM3', 'LSM4', 'LSM5', 'LSM6', 'LSM7', 'LSM8', 'PPIH', 'PRPF3', 'PRPF31', 'PRPF4', 'PRPF6', 'PRPF8', 'SART1', 'SNRNP200', 'SNRPB', 'SNRPD1', 'SNRPD2', 'SNRPD3', 'SNRPE', 'SNRPF', 'SNRPG', 'SNU13', 'USP39', 'ZMAT2'),
+    "Spliceosome, U1 snRNP" = c("SNRPA", "SNRNP70", "SNRPC"), #signal from U2 not good enough
+    "SUMO activating enzyme" = c("SAE1", "UBA2"),
+    "MLL1 complex" = c("ASH2L", "RBBP5"),
+    "ATAC complex" = c("YEATS2", "MBIP", "WDR5", "TADA2A"),
+    "mRNA cleavage and polyadenylation specificity factor complex, core complex" = c("CPSF1", "CSTF3", "CPSF3", "CPSF4", "WDR33", "CPSF2", "SYMPK"),
+    "mRNA cleavage and polyadenylation specificity factor complex, NUDT21/CPSF6 subunit" = c("NUDT21", "CPSF6"),
+    "Exosome" = c( "EXOSC4", "EXOSC6", "EXOSC3", "EXOSC2", "EXOSC8"),
+    "EIF3 complex" = c("EIF3G", "EIF3M",  "EIF3C", "EIF3F", "EIF3J", "EIF3D", "EIF3H", "EIF3I", "EIF3B", "EIF3A"),
+    "26S proteasome, 20S core subunit" = c("PSMA5", "PSMB1", "PSMB3", "PSMB5", "PSMA6", "PSMB7"),
+    "26S proteasome, PA700 regulatory particle" = c("PSMD12", "PSMC3", "PSMD2", "PSMD8", "PSMD4"),
+    "Cholesterol biosynthesis" = c("LSS", "FDFT1", "FDPS", "MVD", "SQLE", "MSMO1"),
+    "ER-associated degradation" = c("SEL1L", "HSPA5"),
+    "Hypoxia pathway, team HIF1A" = c("ARNT", "HIF1A"),
+    "Hypoxia pathway, team VHL" = c("NOM1", "VHL", "HIF1AN"),
+    "Mitochondrial ribosome" = c( "MRPL43",  "MRPL15",  "MRPL21",  "MRPL37", "MRPL1",   "MRPL51",  "MRPL38",  "MRPL55",  "MRPL34", "MRPL10",  "MRPL27", "MRPL36"),
+    "mRNA decay (Upf/Exon junction complex)" = c("MAGOH", "UPF1", "UPF2", "CASC3", "UPF3B", "SMG5", "SMG6", "SMG7"),
+    "INO80 chromatin remodeling complex" = c("INO80", "INO80B", "NFRKB", "ACTR8"),
+    "RNA N6-methyladenosine methyltransferase complex" = c("METTL3", "METTL14", "ZC3H13", "YTHDF2"),
+    "CCR4-NOT complex, CNOT1-3 subunit"=c("CNOT1", "CNOT2", "CNOT3"),
+    "CCR4-NOT complex, CNOT9-10 subunit" = c("CNOT10", "CNOT11"),
+    "NuA4/Tip60-HAT complex" = c("TRRAP",  "DMAP1", "EP400", "ING3", "KAT5", "MEAF6"),
+    "TOMM40 complex" = c("TOMM40", "TOMM20", "TOMM22"),
+    "EIF2 complex" = c("EIF2B5", "EIF2B3", "EIF2B2", "EIF2S2"),
+    "Cytosolic ribosome" = c("RPLP1", "RPL11", "RPL5"),
+    "STAGA complex" = c("TADA1", "SUPT20H"),
+    "TREX complex" = c("THOC7", "THOC1", "THOC5", "THOC2", "THOC3"),
+    "Astra complex" = c("TTI1", "TELO2", "TTI2"),
+    "CAF-1 complex" = c("CHAF1A", "CHAF1B"),
+    "Transcription elongation" = c("ELOF1", "IWS1", "SUPT5H", "SUPT4H1"),
+    "tRNA ligase activity" = c("CARS", "FARSB", "GARS", "QARS", "RARS", "SARS")
+  )
+  
+```
+
+The clusters have lots of overlap in terms of function. Roughly categorize them:
+
+```{r}
+complex_functions <- list(
+  "Transcription regulation" = c("OCT4 + Friends", "SUMO activating enzyme", "MLL1 complex", "ATAC complex", 'INO80 chromatin remodeling complex', 'RNA N6-methyladenosine methyltransferase complex', 'CCR4-NOT complex, CNOT1-3 subunit', 'CCR4-NOT complex, CNOT9-10 subunit', 'NuA4/Tip60-HAT complex', 'STAGA complex', 'TREX complex', 'Astra complex', 'CAF-1 complex'),
+  "Transcription" = c("TFIID", "TFIIF", "TFIIH", "Mediator complex", "RNA Polymerase II", "Paf complex", 'Transcription elongation'),
+  "RNA Processing" = c("Integrator complex, subunit 1", "Integrator complex, subunit 2", "Integrator complex, subunit 3",
+                       "Spliceosome, tri-SNP complex", "Spliceosome, U1 snRNP",
+                       "mRNA cleavage and polyadenylation specificity factor complex, core complex", "mRNA cleavage and polyadenylation specificity factor complex, NUDT21/CPSF6 subunit"),
+  "Translation" = c("EIF3 complex", 'EIF2 complex', 'Cytosolic ribosome', 'tRNA ligase activity'),
+  "Post-translation" = c("Exosome", 
+                         '26S proteasome, 20S core subunit', '26S proteasome, PA700 regulatory particle', 'ER-associated degradation', 'mRNA decay (Upf/Exon junction complex)' ),
+  'Mitochondrial ribosome' = c('Mitochondrial ribosome', 'TOMM40 complex'),
+  "Cell stress response" = c('Cholesterol biosynthesis', 'Hypoxia pathway, team HIF1A', 'Hypoxia pathway, team VHL')
+)
+```
+
+```{r, echo = F}
+complex_function_df <- data.frame(
+  complex_name = unlist(complex_functions),
+  complex_function = rep(names(complex_functions), unlist(lapply(complex_functions, length)))
+) 
+```
+
+# Correlation between Complexes
+
+```{r target_target_initial_heatmap, fig.width = 50, fig.height=40, echo = F, message =F, warning = F}
+
+correlated_target_meta <- data.frame(
+  gene = unlist(genes2aggregate),
+  complex_name = rep(names(genes2aggregate), unlist(lapply(genes2aggregate, length)))
+) 
+correlated_target_meta <- left_join(correlated_target_meta, complex_function_df)
+df4heatmap <- target_target_cor %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% correlated_target_meta$gene & gene_2 %in% correlated_target_meta$gene) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+my_heatmap(df4heatmap, min_c = -0.6, max_c = 0.6,
+           treeheight_row = 0, treeheight_col = 0,
+           annotation_row = correlated_target_meta %>%
+  column_to_rownames('gene'))
+```
+
+
+
+# Write
+
+Writing data frame with each target labeled to:
+
+```{r, echo = F}
+
+fwrite(correlated_target_meta, paste0(outdir, '/', date, "_complex_gene_meta.tsv"), sep = '\t')
+print(paste0(outdir, '/', date, "_complex_gene_meta.tsv"))
+
+```
+
+Writing complex meta to:
+
+```{r, echo = F}
+
+df2write <- correlated_target_meta %>%
+  group_by(complex_name) %>%
+  summarize(
+    complex_function = unique(complex_function),
+    genes_in_complex = paste(gene, collapse = '_')
+  ) %>%
+  rownames_to_column('complex_ind')
+
+fwrite(df2write, paste0(outdir, '/', date, "_complex_meta.tsv"), sep = '\t')
+print(paste0(outdir, '/', date, "_complex_meta.tsv"))
+
+```
+
+# Session Info
+
+```{r, echo = F}
+sessionInfo()
+```
+
+
+
+
+

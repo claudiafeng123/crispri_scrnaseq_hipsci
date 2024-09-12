@@ -1,0 +1,311 @@
+---
+title: "What predicts the number of downstream genes of a target?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  utils_path: "../../io/Magpie_Utils.R"
+  io_path: "../../io/Magpie_io.R"
+  date: "2022-08-15"
+  section_name: "10a_number_of_DEGs"
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+# Pluripotency Markers
+
+Pluripotency markers are obtained from: https://link.springer.com/article/10.1007/s12015-015-9622-8.
+
+```{r, echo = F}
+pluripotency_tfs <- list(
+  'Core transcriptional circuitry' = c("POU5F1", 'SOX2', 
+                      'MYC', 'MYCL',
+                      'LIN28A', 'NANOG', 'SALL4', 'UTF1', 
+                      'NR5A2'),
+  'Apoptosis & cell cycle' = c('P53', 'CDKN1A', 'CDKN2', 'MDM2', 'CCND1'),
+  'TGFb pathway' = c('TGFBR1', 'SNAI1', 'SNAI2'),
+  'Chromatin remodeling' = c('RCOR2', "SIRT6", 'DOT1L', "MDB3"),
+  'E-cadherin/b-catenin' = c("GJA1")
+)
+pluripotency_tf_labels <- data.frame(
+  gene = unlist(pluripotency_tfs),
+  label = rep(names(pluripotency_tfs), unlist(lapply(pluripotency_tfs, length)))
+)
+knitr::kable(pluripotency_tf_labels)
+```
+
+Total number of pluripotency factors:
+
+```{r, echo = F}
+dim(pluripotency_tf_labels)[1]
+```
+
+# Trans Effects
+
+## Number of Trans Effects
+
+```{r n_trans_effects, fig.width = 3, fig.height =4, echo = F, warning = F}
+
+df4plot <- target_meta %>%
+  dplyr::filter(gene %in% unlist(pluripotency_tfs))
+ggplot(df4plot %>%
+         mutate(n_downstream_excl_target = ifelse(is.na(n_downstream_excl_target), 0, n_downstream_excl_target)), aes(x = n_downstream_excl_target,y = reorder(gene, n_downstream_excl_target))) + 
+  xlab("# of Trans Effects") + ylab("Target") + 
+  geom_bar(stat = 'identity') + theme_bw()
+
+df4plot %>% slice_max(n_downstream_excl_target, n =3) %>% dplyr::select(c("gene", "n_downstream_excl_target"))
+```
+
+Compare to power:
+
+```{r n_trans_effects_vs_power, fig.width = 4.3, fig.height =4, echo = F, warning = F}
+ggplot(df4plot, aes(x = n_cells, y = n_downstream_excl_target, label = gene)) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf, col = 'red') + 
+  xlab("# of Perturbed Cells") + ylab("# of Trans Effects") + 
+  geom_point() + theme_bw()
+```
+
+Compare to on-target expression:
+
+```{r n_trans_effects_vs_on_target, fig.width = 8, fig.height =4, echo = F, warning = F}
+p_on_target_lfc <- ggplot(df4plot, aes(x = target_lfc, y = n_downstream_excl_target, label = gene)) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf, col = 'red') + 
+  xlab("LFC") + ylab("# of Trans Effects") + 
+  geom_point() + theme_bw()
+p_on_target_pval <- ggplot(df4plot, aes(x = -log10(pval_adj), y = n_downstream_excl_target, label = gene)) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf, col = 'red') + 
+  xlab("-log10(pval_adj)") + ylab("# of Trans Effects") + 
+  scale_x_log10() + 
+  geom_point() + theme_bw()
+ggarrange(p_on_target_lfc, p_on_target_pval)
+```
+## Number of Regulators
+
+```{r n_regulators, fig.width = 4.3, fig.height =4, echo = F, warning = F}
+
+ggplot(df4plot, aes(x = control_norm_expr, y = n_targets_that_de, label = gene)) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf, col = 'red') + 
+  xlab("Control Expression") + ylab("# of Regulating genes") + 
+  geom_point() + theme_bw()
+
+
+```
+
+# Correlation of Perturbation Profiles
+
+## Number of Correlated Genes
+
+```{r n_correlated_knockdowns, fig.width = 4.3, fig.height =4, echo = F, warning = F}
+
+n_correlates <- target_target_cor_anno %>%
+  dplyr::filter(gene_1 %in% unlist(pluripotency_tfs) & abs(cor_all) > sig_cor_thresh_target & gene_1 != gene_2)
+n_correlates <- as.data.frame(table(n_correlates$gene_1))
+knitr::kable(n_correlates)
+ggplot(n_correlates, aes(x = Freq, y = reorder(Var1, Freq))) +
+  xlab("# of Similar Knockdowns") + ylab('') +
+  geom_bar(stat = 'identity') + theme_bw()
+
+```
+
+## Heatmap
+
+First do just off plain Pearson's correlation
+
+```{r, fig.height=5, fig.width = 6, echo = F, warning = F}
+df4cor <- magpie_lfcs %>%
+  dplyr::filter(target %in% unlist(pluripotency_tfs)) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc")) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target')
+df4heatmap <- cor(t(df4cor))
+my_heatmap(df4heatmap, 
+           min_c = -0.5, max_c = 0.5,
+           border_col = NA,
+           treeheight_row = 0, treeheight_col = 0)
+```
+
+Try weighted correlation?
+
+
+```{r, fig.height=5, fig.width = 6, echo = F, warning = F}
+df4cor_vals <- magpie_lfcs %>%
+  dplyr::filter(target %in% unlist(pluripotency_tfs)) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc")) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target')
+df4cor_weights <- magpie_lfcs %>%
+  dplyr::filter(target %in% unlist(pluripotency_tfs)) %>%
+  dplyr::select(c("target", "downstream_gene_name", "v")) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target')
+df4heatmap <- cor(t(df4cor))
+my_heatmap(df4heatmap, 
+           min_c = -0.5, max_c = 0.5,
+           border_col = NA,
+           treeheight_row = 0, treeheight_col = 0)
+```
+
+
+## Number of Co-perturbed Genes
+
+```{r n_co-perturbed_downstream fig.width = 4.3, fig.height =6, echo = F, warning = F}
+
+perturbing_targets <- downstream_downstream_cor_anno %>%
+  dplyr::filter(downstream_gene_1 %in% unlist(pluripotency_tfs) & abs(iPSC_cor) > 0.2 & downstream_gene_1 != downstream_gene_2)
+n_coperturbed <- perturbing_targets %>% .$downstream_gene_1 %>%
+  table() %>% as.data.frame()
+ggplot(n_coperturbed, aes(x = Freq, y = reorder(`.`, Freq))) +
+  xlab("# of Co-perturbed Genes") + ylab('') +
+  geom_bar(stat = 'identity') + theme_bw()
+knitr::kable(n_coperturbed )
+```
+
+# Get Genes to Cluster
+
+## Heatmap of Pluripotency TFs
+
+```{r heatmap_of_tfs_only, fig.width = 20, fig.height =4, echo = F, warning = F}
+targets2consider <- unlist(pluripotency_tfs)
+downstreams2consider <- magpie_lfcs %>%
+  dplyr::filter(target %in% unlist(pluripotency_tfs) & pval_adj < 0.1 & 
+                  abs(lfc) > 0.1 & target != downstream_gene_name) %>%
+  .$downstream_gene_name %>% as.character() %>%
+  table() %>% as.data.frame() %>%
+  dplyr::filter(Freq >=1) %>%
+  .$`.` %>% as.character()
+downstreams2consider <- sort(unique(downstreams2consider, unlist(pluripotency_tfs)))
+
+df4heatmap <- magpie_lfcs %>%
+  dplyr::filter(target %in% targets2consider  & 
+                  downstream_gene_name %in% downstreams2consider) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'lfc', 'pval_adj')) %>%
+  #mutate(lfc = ifelse(pval_adj < 0.1, lfc, 0)) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target') %>%
+  as.matrix()
+
+row_anno <- target_meta %>%
+  dplyr::filter(gene %in% row.names(df4heatmap)) %>%
+  dplyr::select(c("gene", "pre_day10_lfc_mean")) %>%
+  column_to_rownames('gene')
+my_heatmap(df4heatmap,
+           treeheight_row=0, treeheight_col = 0,
+           min_c = -0.5, max_c = 0.5,
+           border_col = NA, 
+           annotation_row=row_anno)
+
+```
+
+
+## Heatmap of Pluripotency TFs + Correlated Knockdowns
+
+```{r heatmap_of_tfs_and_correlates, fig.width = 20, fig.height =6, echo = F, warning = F}
+new_targets <- target_target_cor_anno %>%
+  dplyr::filter(gene_1 %in% unlist(pluripotency_tfs) & abs(cor_all) > 0.2 & gene_1 != gene_2)
+targets2consider <- target_target_cor_anno %>%
+  dplyr::filter(gene_1 %in% unlist(pluripotency_tfs) & abs(cor_all) > 0.2) %>%
+  .$gene_2
+downstreams2consider <- magpie_lfcs %>%
+  dplyr::filter(target %in% unlist(pluripotency_tfs) & pval_adj < 0.1 & 
+                  abs(lfc) > 0.1 & target != downstream_gene_name) %>%
+  .$downstream_gene_name %>% as.character() %>%
+  table() %>% as.data.frame() %>%
+  dplyr::filter(Freq >=1) %>%
+  .$`.` %>% as.character()
+downstreams2consider <- sort(unique(downstreams2consider, unlist(pluripotency_tfs)))
+
+df4heatmap <- magpie_lfcs %>%
+  dplyr::filter(target %in% targets2consider  & 
+                  downstream_gene_name %in% downstreams2consider) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'lfc', 'pval_adj')) %>%
+  #mutate(lfc = ifelse(pval_adj < 0.1, lfc, 0)) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target') %>%
+  as.matrix()
+
+row_anno <- target_meta %>%
+  dplyr::filter(gene %in% row.names(df4heatmap)) %>%
+  dplyr::select(c("gene", "pre_day10_lfc_mean")) %>%
+  column_to_rownames('gene')
+my_heatmap(df4heatmap,
+           treeheight_row=0, treeheight_col = 0,
+           min_c = -0.5, max_c = 0.5,
+           border_col = NA, 
+           annotation_row=row_anno)
+
+```
+
+
+## Get Correlates
+
+Remove anything without a lot of signal. Keep only pluripotency genes some signal (> 2 trans effects) or some number of highly correlated knockdowns ( > 1 other knockdown with R > 0.2).
+
+```{r, fig.width = 22, fig.height =4.5, echo = F, warning = F}
+pluripotency_gene_meta <- left_join(left_join(pluripotency_tf_labels, 
+                                    n_correlates %>% dplyr::select(c('gene' = "Var1", 'n_correlated' ='Freq'))),
+                                    target_meta %>% dplyr::select(c("gene", "n_downstream_excl_target", "n_cells"))) %>%
+  mutate(n_correlated = ifelse(is.na(n_correlated), 0, n_correlated))
+tfs_with_signal <- pluripotency_gene_meta %>%
+  dplyr::filter(n_downstream_excl_target > 2 | n_correlated > 1)
+
+correlated_knockdowns <- target_target_cor_anno %>%
+  dplyr::filter(gene_1 %in% tfs_with_signal$gene & abs(cor_all) > sig_cor_thresh_target & gene_1 != gene_2 & !(gene_2 %in% targets2exclude)) %>% dplyr::select(c("gene_1", "gene_2", "cor_all"))
+
+targets2consider <- correlated_knockdowns$gene_2
+downstreams2consider <- magpie_lfcs %>%
+  dplyr::filter(target %in% unlist(pluripotency_tfs) & pval_adj < 0.1 & 
+                  abs(lfc) > 0.1 & target != downstream_gene_name) %>%
+  .$downstream_gene_name %>% as.character() %>%
+  table() %>% as.data.frame() %>%
+  dplyr::filter(Freq >=1) %>%
+  .$`.` %>% as.character()
+downstreams2consider <- sort(unique(downstreams2consider, unlist(pluripotency_tfs)))
+
+df4heatmap <- magpie_lfcs %>%
+  dplyr::filter(target %in% targets2consider  & 
+                  downstream_gene_name %in% downstreams2consider) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'lfc', 'pval_adj')) %>%
+  #mutate(lfc = ifelse(pval_adj < 0.1, lfc, 0)) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target') %>%
+  as.matrix()
+
+row_anno <- target_meta %>%
+  dplyr::filter(gene %in% row.names(df4heatmap)) %>%
+  dplyr::select(c("gene", "pre_day10_lfc_mean")) %>%
+  column_to_rownames('gene')
+my_heatmap(df4heatmap,
+           treeheight_row=0, treeheight_col = 0,
+           min_c = -0.5, max_c = 0.5,
+           border_col = NA, 
+           annotation_row=row_anno)
+```
+
+# Write Table
+
+```{r, echo = F}
+pluripotency_tfs2aggregate <- list(
+  "Chromatin remodeling" = c("RCOR2", "FAM122A", "KDM1A"),
+  'Core transcriptional circuitry' = c("POU5F1", "NANOG", "SOX2"),
+  "Cluster_1" = c("POU5F1", "SOX2", "NANOG", "SALL4"),
+  "Cluster_2" = c("RCOR2", "UTF1", "GJA1", "CCND1", "SIRT6", "SNAI2", "MYCN", "SNAI1", "LIN28A", "MYC", "CDKN2A", "MYCL")
+)
+pluripotency_clusters_df <- data.frame(
+  complex_name = names(pluripotency_tfs2aggregate),
+  genes_in_complex = unlist(lapply(pluripotency_tfs2aggregate, FUN = function(x){paste(x, collapse = '_')}))
+)
+fwrite(pluripotency_clusters_df, paste0(outdir, date, '_tf_clusters.tsv'), sep = '\t')
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
+

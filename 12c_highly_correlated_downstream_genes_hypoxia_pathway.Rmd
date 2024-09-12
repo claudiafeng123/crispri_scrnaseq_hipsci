@@ -1,0 +1,219 @@
+---
+title: "The Hypoxia Genes"
+author: "Claudia Feng"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "12c_highly_correlated_downstream_genes"
+  complex_of_interest : "hypoxia_pathway"
+  experiment_name : "Magpie"
+---
+
+```{r, echo = F}
+HomeFolder <- params$home_folder
+ExperimentName <- params$experiment_name
+date <- params$date
+section_name <- params$section_name
+network_of_interest <- params$network_of_interest
+```
+
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = paste0(plotsdir, "/", tolower(gsub( x = params$complex_of_interest, pattern = " ", replacement = '_')), "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+ 
+# Genes Clustered Together in UMAP
+
+## UMAP
+
+```{r highlighted_umap, warning = F, echo = F, fig.width = 6, fig.height = 6 }
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        col = ifelse(umap_1 <0 & umap_2 > 4 , "y", "n"))) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  scale_color_manual(values = c('y' = 'red', 'n' = 'gray')) + 
+  geom_point(size = 0.4) + theme_bw()  + theme(legend.position = 'none')
+
+```
+ 
+
+## Zoom In
+
+All genes in the UMAP cluster:
+
+```{r, echo = F}
+
+genes_of_interest <- c("BNIP3", "IGFBP2", "ALDOA", "LDHA", "PGK1", "FAM162A", "PGAM1", "ENO1", "TPI1", "C4orf3", "PKM", "GPI")
+print("Downstream genes in UMAP cluster:")
+print(genes_of_interest)
+
+```
+
+## Functional Enrichment
+
+# Add in Highly Correlated Genes
+
+## Distribution of Correlations
+
+```{r umap_cluster_heatmap, echo = F, fig.width = 7, fig.height=6}
+
+df4heatmap <- magpie_lfcs_by_downstream[genes_of_interest] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc")) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target') %>%
+  cor()
+print(my_heatmap(df4heatmap,
+           treeheight_row = 0, treeheight_col = 0, min_c = -1, max_c = 1,
+      border_col = NA))
+
+```
+
+# Genes that Up/Downregulate these genes
+
+```{r, echo = F}
+targets_that_de <- magpie_lfcs_by_downstream[genes_of_interest] %>%
+  bind_rows() %>% as.data.frame() %>%
+  filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  .$target %>% table()
+targets_that_de <- data.frame(
+  target = names(targets_that_de),
+  num_targets_of_interest = as.numeric(targets_that_de),
+  num_targets_total = target_meta$n_downstream_excl_target[match(names(targets_that_de), target_meta$gene)],
+  is_tf = names(targets_that_de) %in% tfs$source
+) %>%
+  mutate(frac_targets_of_interest = num_targets_of_interest/num_targets_total) %>%
+  filter(num_targets_total > 3) %>% 
+  arrange(desc(frac_targets_of_interest)) %>%
+  slice_max(frac_targets_of_interest, n = 4) %>% 
+  dplyr::select(c("target",
+                  "num_targets_of_interest",
+                  "num_targets_total")) %>%
+  dplyr::mutate(
+    sensitivity = num_targets_of_interest/num_targets_total,
+    precision = num_targets_of_interest/length(c(genes_of_interest, correlated_genes))
+    ) %>%
+  dplyr::filter(
+    !(target %in% genes2exclude)
+  )
+names(targets_that_de) <- c("Target", "Glycolysis Genes Perturbed by Target", "Number of Downstream DEG")
+to_save <- list(
+  genes_of_interest = c(genes_of_interest, correlated_genes),
+  targets_that_de = targets_that_de
+)
+saveRDS(to_save, paste0(outdir, '/', date, '_targets-that-cause-glycolysis.RDS'))
+knitr::kable(targets_that_de)
+
+```
+
+Adding the following genes (adding in VHL manually):
+
+```{r, echo = F}
+targets_that_de <- unique(c("VHL", targets_that_de$Target))
+print(paste0("Adding ", length(targets_that_de), " genes:"))
+print(targets_that_de)
+targets_that_de <- c("VHL", "ARNT", "HIF1A")
+```
+
+## Genes that Up/Down-regulate the Up/Down-regulators
+
+Check for more up-stream genes.
+
+```{r, echo = F}
+
+targets_that_de_2 <- magpie_lfcs_by_downstream[targets_that_de] %>% 
+  bind_rows() %>% as.data.frame() %>%
+  filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  .$target %>% table()
+print(targets_that_de_2)
+
+```
+
+No genes up-stream of VHL, HIF1A, ARNT, NOM1 or RASL10A.
+
+# Final selection
+
+
+
+```{r target_downstream_heatmap, message = F, warning = F, fig.width = 8, fig.height = 4, echo = F}
+
+df4heatmap <- magpie_lfcs_by_downstream[c(genes_of_interest, correlated_genes)] %>% bind_rows() %>% as.data.frame() %>%
+  filter(target %in% c(targets_that_de)) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc")) %>%
+  reshape2::dcast(target ~ downstream_gene_name) %>%
+  column_to_rownames('target')
+my_heatmap(df4heatmap, midpoint = 0, treeheight_row = 0, treeheight_col = 0)
+genes_to_consider <-data.frame(
+  gene = c(genes_of_interest, correlated_genes, targets_that_de),
+  reason = c(rep("in umap cluster", length(genes_of_interest)),
+             rep("highly correlated deg", length(correlated_genes)),
+             rep("target that perturbs", length(targets_that_de))
+  )
+) %>% mutate(
+  off_target = gene %in% (filter(off_targets, target_gene %in% targets_that_de) %>% .$off_target_gene)
+)
+genes_to_consider <- genes_to_consider[!(duplicated(genes_to_consider$gene)),]
+fwrite(genes_to_consider, paste0(outdir, '/', params$date, "_", params$complex_of_interest, ".tsv"), sep  = '\t')
+```
+
+## UMAP
+
+```{r highlighted_umap_all, warning = F, echo = F, fig.width = 6, fig.height = 6}
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        col = ifelse(gene %in% genes_to_consider$gene, 'y', 'n'))) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  scale_color_manual(values = c('y' = 'red', 'n' = 'gray')) + 
+  geom_point(size = 0.4) + theme_bw()  + theme(legend.position = 'none')
+
+```
+
+# Total Causal Effects
+
+```{r, fig.width = 24, fig.height=8}
+targets_of_interest <- sort(unique(c(genes_of_interest, "VHL", "ARNT", "HIF1A"), names(magpie_lfcs_by_target)))
+sig_effects <- magpie_lfcs_by_target[targets_of_interest] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & downstream_gene_name %in% genes_of_interest & target != downstream_gene_name) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc"))
+
+g <- graph_from_data_frame(sig_effects)
+
+set.seed(0)
+layout_g <- layout_as_tree(g)
+layout_g[,1] <- layout_g[,1]*(6/diff(range(layout_g[,1])))
+layout_g[,2] <- layout_g[,2] - 0.5
+
+## center the upregulating genes
+layout_g[which(!(names(V(g)) %in% c("VHL", "ARNT", "HIF1A"))),1] <- layout_g[which(!(names(V(g)) %in% c("VHL", "ARNT", "HIF1A"))),1] - mean(layout_g[which(!(names(V(g)) %in% c("VHL", "ARNT", "HIF1A"))),1])
+
+current_coords <- layout_g %>% as.data.frame() %>% mutate(gene = names(V(g)))
+V(g)$fill_col = ifelse(names(V(g)) %in% c("VHL", "ARNT", "HIF1A"), target_col, downstream_col)
+E(g)$line_col = ifelse(sig_effects$lfc < 0, down_regulated_blue, up_regulated_red)
+plot(g,
+     layout = layout_g,
+     edge.size = 0.3, vertex.size = 30,
+     vertex.label.family="Arial", vertex.label.font=2,
+     vertex.color = V(g)$fill_col,
+     edge.color = E(g)$line_col,
+     vertex.label.color = 'white',
+     rescale=FALSE)
+
+to_save <- list(
+  g = g,
+  layout_g = layout_g
+)
+saveRDS(to_save, paste0(outdir, '/', params$complex_of_interest, '/', date, '_data4network.RDS'))
+```
+
+
+# Session info
+
+```{r session_info}
+sessionInfo()
+```

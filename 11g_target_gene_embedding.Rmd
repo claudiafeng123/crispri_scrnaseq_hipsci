@@ -1,0 +1,896 @@
+---
+title: "Target Embedding"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "11d_target_target_cor"
+---
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = file.path(plotsdir, "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+
+Just focus on the complexes that have lots of signal and show that they cluster roughly by complex, then by function. We can get into pluripotency later.
+
+# Heatmap
+
+## Choose Targets to Consider
+
+Start with targets with at least 10 DEG and 10 cells.
+
+```{r, echo = F, warning = F, message = F}
+targets_with_signal <- target_meta %>% 
+  dplyr::filter(n_downstream_excl_target >= min_deg_per_target & n_cells >= min_cells_per_gene & !(gene %in% genes2exclude)) %>% 
+  .$gene
+print(paste0(length(targets_with_signal), " Targets with Signal"))
+```
+
+```{r, echo = F, warning = F, message = F}
+targets_of_interest <- target_target_cor_anno %>%
+  dplyr::filter(abs(cor_all) > sig_cor_thresh_target & gene_1 != gene_2 & gene_1 %in% targets_with_signal & gene_2 %in% targets_with_signal) %>%
+  .$gene_1 %>% table() %>% as.data.frame() %>%
+  dplyr::filter(Freq >= 2) %>% .$`.` %>% as.character()
+```
+
+## Choose Downstream Genes
+
+Focus only on downstream DEG
+
+```{r, echo = F, warning = F, message = F}
+deg4heatmap <- magpie_res_split[targets_of_interest] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  .$downstream_gene_name %>% sort() %>% unique()
+print(paste0(length(deg4heatmap), " downstream genes considered"))
+```
+
+## Initial Heatmap
+
+```{r initial_heatmap, echo = F, fig.width = 30, fig.height = 25}
+df4heatmap <- magpie_res_split[targets_of_interest] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(downstream_gene_name %in% deg4heatmap) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'lfc')) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target') %>%
+  t() %>% cor()
+p <- my_heatmap(df4heatmap,treeheight_row = 0, treeheight_col = 0,
+           min_c = -0.8, max_c = 0.8)
+saveRDS(df4heatmap, paste0(outdir,'/', date, '_initial_heatmap.RDS') )
+```
+
+
+## Cleaned-up Heatmap
+### Find Optimal Number of Clusters
+
+```{r optimal_n_clusters, fig.width = 15, fig.height = 4, echo = F}
+hclust_res <- hclust(dist(df4heatmap))
+hclust_order4heatmap <- colnames(df4heatmap)[hclust_res$order]
+fviz_nbclust(df4heatmap , FUN = hcut, method = "silhouette", k.max = 50)
+```
+
+Optimal number of clusters is 15. 
+
+```{r annotate_targets_by_cluster, fig.width = 15, fig.height = 4, echo = F}
+opt_clusters <- 21
+target_anno <- cutree(hclust_res, k = opt_clusters) %>% as.data.frame() %>%
+  rownames_to_column('gene')
+names(target_anno) <- c('gene', 'cluster')
+target_anno <- split.data.frame(target_anno, f = target_anno$cluster)
+target_anno <- as.data.frame(bind_rows(lapply(target_anno, FUN = function(df){
+  df$order_in_cluster <- match(df$gene, hclust_order4heatmap[which(hclust_order4heatmap %in% df$gene)])
+  return(df)
+})))
+
+```
+
+Check what the heatmap looks like based on this.
+
+```{r heatmap_labeled_with_clusters, echo = F, fig.width = 30, fig.height = 25}
+row_anno <- target_anno %>% dplyr::select('gene', 'cluster') %>% column_to_rownames('gene')
+row_anno$cluster <- factor(row_anno$cluster)
+p <- my_heatmap(df4heatmap[hclust_order4heatmap, hclust_order4heatmap],
+                treeheight_row = 0, treeheight_col = 0,
+                min_c = -0.8, max_c = 0.8,
+                cluster_rows = F, cluster_cols = F,
+                annotation_row = row_anno)
+grid::grid.newpage()
+grid::grid.draw(p$gtable)
+
+```
+
+### Functional Annotation of Clusters
+
+Get a heatmap of each cluster and figure out which of the complexes/other GO annotations are represented. 
+```{r heatmap_by_cluster, fig.width=8, fig.height=6, echo = F, warning = F, message = F}
+cluster_anno <- lapply(1:opt_clusters, FUN = function(cluster_ind){
+  genes_in_cluster <- target_anno %>%
+    dplyr::filter(cluster == cluster_ind) %>% .$gene
+  
+  complexes_represented <- data.frame(
+    go_id = '',
+    go_term = names(protein_complexes),
+    go_ontology = 'Omnipath',
+    n_overlap = unlist(lapply(protein_complexes, FUN = function(a){length(which(genes_in_cluster %in% a))})),
+    term_size = unlist(lapply(protein_complexes, length))
+  ) %>% mutate(frac_overlap = n_overlap/term_size) %>%
+    dplyr::filter(n_overlap > 1)
+  
+  go_ids_represented <- data.frame(
+    go_id = names(gprofiler_annotations),
+    go_term = gprofiler_terms$Term[match(names(gprofiler_annotations), gprofiler_terms$GO_ID)],
+    go_ontology = gprofiler_terms$Ontology[match(names(gprofiler_annotations), gprofiler_terms$GO_ID)],
+    n_overlap = unlist(lapply(gprofiler_annotations, FUN = function(a){length(which(genes_in_cluster %in% a))})),
+    term_size = unlist(lapply(gprofiler_annotations, length))
+  ) %>% mutate(frac_overlap = n_overlap/term_size) %>%
+    dplyr::filter(n_overlap >= 5) %>%
+    slice_max(frac_overlap, n = 5)
+  
+  func_anno <- as.data.frame(bind_rows(complexes_represented, go_ids_represented)) %>%
+    mutate(cluster = cluster_ind)
+  
+  ## do a heatmap as well to compare with replogle (see which are ipsc-specific)
+  df4heatmap_iPSCs <- target_target_cor_anno %>%
+    dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+    dplyr::filter(gene_1 %in% genes_in_cluster & gene_2 %in% genes_in_cluster) %>%
+    reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+    column_to_rownames('gene_1') %>%
+    as.matrix()
+  df4heatmap_K562 <- target_target_cor_anno %>%
+    dplyr::select(c('gene_1', 'gene_2', 'K562_gwps_cor')) %>%
+    dplyr::filter(gene_1 %in% genes_in_cluster & gene_2 %in% genes_in_cluster) %>%
+    reshape2::dcast(gene_1 ~ gene_2, value.var = 'K562_gwps_cor') %>%
+    column_to_rownames('gene_1') %>%
+    as.matrix()
+  row_anno <- data.frame(
+    is_tf = factor(ifelse(genes_in_cluster %in% predicted_tfs$`HGNC symbol`, 'tf', 'not tf'))
+  )
+  row.names(row_anno) <- genes_in_cluster
+  p <- double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_K562,
+                      min_c = -0.6, max_c = 0.6,
+                      annotation_row = row_anno,
+                      treeheight_row = 0, treeheight_col = 0, border_col = NA)
+  grid::grid.newpage()
+  print(grid::grid.draw(p$gtable))
+  return(func_anno)
+}) %>% bind_rows () %>% as.data.frame()
+
+
+
+```
+
+### Reorder Branches
+
+```{r heatmap_reordered_branches, fig.width = 30, fig.height = 25, echo = F, warning = F, message = F}
+
+functions_with_signal <- list(
+  "1_Regulation of transcription" = c(1, 11),
+  "2_Transcription" = c(6, 9, 10, 13, 15),
+  "3_RNA processing" = c(3, 5),
+  "4_Peptide synthesis" = c(2, 8, 14),
+  '5_Translation and Post-translational processing' = c(4, 7, 12)
+)
+cluster_function_mapping <- data.frame(
+  cluster_function = rep(names(functions_with_signal), unlist(lapply(functions_with_signal, length))),
+  cluster_ind = unlist(functions_with_signal)
+)
+
+target_anno <- target_anno %>% 
+  mutate(cluster_function = cluster_function_mapping$cluster_function[match(cluster, cluster_function_mapping$cluster_ind)])
+target_anno$cluster_function <- factor(target_anno$cluster_function)
+levels(target_anno$cluster_function) <- c("Regulation of transcription", 'Transcription', 'RNA processing', 'Peptide synthesis',  'Translation and Post-translational processing')
+
+row_anno <- target_anno %>% 
+  dplyr::select(c('gene', 'cluster_function')) %>%
+  column_to_rownames('gene')
+
+order4heatmap <- target_anno %>%
+  arrange(order_in_cluster) %>%
+  arrange(cluster) %>%
+  arrange(cluster_function) %>%
+  .$gene
+p <- my_heatmap(df4heatmap[order4heatmap, order4heatmap],
+                treeheight_row = 0, treeheight_col = 0,
+                min_c = -0.8, max_c = 0.8,
+                cluster_rows = F, cluster_cols = F,
+                annotation_colors = list(cluster_function = complex_cluster_colors),
+                annotation_row = row_anno)
+p <- ggarrange(p[[4]])
+p 
+
+```
+
+
+### Final Heatmap
+
+Add in individual protein complexes
+
+```{r final_heatmap, fig.width = 17, fig.height = 10, echo = F, message = F, warning = F}
+
+## gene functions
+#claudia <- dplyr::filter(cluster_anno, cluster %in% c(7, 12))
+complexes_in_function <- list(
+  "Regulation of transcription" = sort(c("CCR4-NOT complex", "RNA N6-methyladenosine methyltransferase complex", "INO80 chromatin remodeling complex", "NuA4/Tip60-HAT complex")),
+  "Transcription" = sort(c("RNA Polymerase II", "iPSC maintennance", "Paf complex", "Mediator complex", "TFIID", "TFIIH")),
+  "RNA processing" = sort(c("Spliceosome", '26S proteasome')), #, "Cleavage and polyadenylation factor")),
+  "Peptide synthesis" = sort(c("EIF2 complex", 'tRNA ligases', "Mitochondrial ribosome", "TOMM40 complex")),
+  'Translation and Post-translational processing' = sort(c('Integrator complex', "EIF3 complex", 'TREX complex', 'Exosome'))
+)
+function_colors <- hue_pal()(length(complexes_in_function)); names(function_colors) <- names(complexes_in_function)
+complexes_in_function_df <- data.frame(
+  complex_function = rep(names(complexes_in_function), unlist(lapply(complexes_in_function, length))),
+  complex_name = unlist(complexes_in_function)
+) %>%
+  mutate(function_color = function_colors[match(complex_function, names(function_colors))])
+
+## complexes within functions
+complex_anno_list <- list(
+  "INO80 chromatin remodeling complex" = c('ACTR8', 'INO80', 'INO80B', 'NFRKB'),
+  'RNA N6-methyladenosine methyltransferase complex' = c('RBM15', 'YTHDF12', 'CBLL1', 'METTL3', 'METTL14', 'ZC3H13', 'SERPINB1'),
+  'NuA4/Tip60-HAT complex' = c("DMAP1", "EP400", "FAM122A", "ING3", "MAX", "MEAF6", 'TRRAP'),
+  'Paf complex' = c('CDC73', 'CTR9', 'PAF1', 'RTF1'),
+  'CCR4-NOT complex' = c('CNOT1', 'CNOT2', 'CNOT3'),
+  'iPSC maintennance' = c("POU5F1", "NANOG", "PRDM14"),
+  'Mediator complex' = grep(row.names(df4heatmap), pattern = '^MED', value = T),
+  'RNA Polymerase II' = grep(row.names(df4heatmap), pattern = '^POLR2', value = T),
+  'TFIID' = grep(row.names(df4heatmap), pattern = '^TAF', value = T),
+  'Spliceosome' = grep(target_anno %>% dplyr::filter(cluster_function == "RNA processing") %>% .$gene, pattern = "^CPSF", value = T, invert = T),
+  "EIF2 complex" = grep(row.names(df4heatmap), pattern = '^EIF2', value = T),
+  "tRNA ligases" = c('CARS', 'FARSB', 'GARS', 'RARS', 'SARS', 'TARS2'),
+  "TOMM40 complex" = grep(row.names(df4heatmap), pattern = 'TOMM', value = T),
+  "Mitochondrial ribosome" = grep(row.names(df4heatmap), pattern = '^MRP', value = T),
+  'Exosome' = grep(row.names(df4heatmap), pattern = '^EXOSC', value = T),
+  'TREX complex' = grep(row.names(df4heatmap), pattern = '^THOC', value = T),
+  "EIF3 complex" = grep(row.names(df4heatmap), pattern = '^EIF3', value = T),
+  "26S proteasome" = grep(row.names(df4heatmap), pattern = '^PSM', value = T),
+  "Integrator complex" = c("INTS8", "INTS1", "INTS2", "INTS5")
+)
+complex_colors <- rep('', length(complex_anno_list))
+names(complex_colors) <- names(complex_anno_list)
+for (n_ind in 1:length(names(complexes_in_function))){
+  n <- names(complexes_in_function)[n_ind]
+  cs <- complexes_in_function[[n]]
+  base_color_angle <- 15 + 360*(n_ind-1)/length(complexes_in_function)
+  for (c_ind in 1:length(cs)){
+    complex_colors[cs[c_ind]] <- hue_pal(h = rep(base_color_angle, 2), l = (length(cs) - c_ind + 1)/length(cs)*80 + 10)(1)
+  }
+}
+
+genes_in_complexes_df <- data.frame(
+  gene = unlist(complex_anno_list),
+  complex_name = rep(names(complex_anno_list), unlist(lapply(complex_anno_list, length)))
+) %>% 
+  mutate(complex_color = complex_colors[match(complex_name, names(complex_colors))])
+
+## color scheme
+color_scheme <- left_join(left_join(data.frame(gene = row.names(df4heatmap)),
+                          genes_in_complexes_df),
+                          complexes_in_function_df)
+
+
+## annotations on left
+cell_dim_points <- 2.25
+fig_height_inches <- 10; fig_height_points <- fig_height_inches/72
+fig_width_inches <- 17
+heatmap_height_points <- dim(df4heatmap)[1]*cell_dim_points; heatmap_height_inches <- heatmap_height_points/72
+y_scale <- ((fig_height_inches - (fig_height_inches - heatmap_height_inches)/2)/fig_height_inches -
+              (fig_height_inches - heatmap_height_inches)/2/fig_height_inches)
+y_shift <- (fig_height_inches - heatmap_height_inches)/2/fig_height_inches
+x_shift <- (fig_width_inches - heatmap_height_inches)/2/fig_width_inches
+row_label_df <- target_anno[match(order4heatmap, target_anno$gene),] %>%
+  mutate(heatmap_order = 1:dim(target_anno)[1]) %>%
+  group_by(cluster_function) %>%
+  summarize(y_mean = 1 - mean(heatmap_order)/dim(target_anno)[1]) %>%
+  mutate(y_mean = y_mean*y_scale +y_shift)
+row_label_df$cluster_labels <- unlist(lapply(as.character(row_label_df$cluster_function), FUN = function(cl_fun){
+  paste0("**", cl_fun, '**<br>\n', paste0(complexes_in_function[[cl_fun]], collapse = '<br>'))
+}))
+
+row_anno <- target_anno %>% 
+  dplyr::select(c('gene', 'cluster_function')) %>%
+  mutate(Complex = color_scheme$complex_name[match(gene, color_scheme$gene)]) %>%
+  column_to_rownames('gene')
+colnames(row_anno) <- c("Function", "Complex")
+row_anno <- dplyr::select(row_anno, c("Complex", "Function"))
+
+order4heatmap <- hclust(dist(df4heatmap))$order
+df4heatmap_lowertri <- df4heatmap[order4heatmap, order4heatmap]
+df4heatmap_lowertri[upper.tri(df4heatmap_lowertri)] <- NA
+p <- my_heatmap(df4heatmap_lowertri,
+                treeheight_row = 0, treeheight_col = 0,
+                min_c = -0.8, max_c = 0.8,
+                show_rownames = F, show_colnames = F,
+                cluster_rows = F, cluster_cols = F, 
+                legend = F,annotation_legend = F,
+                annotation_row = row_anno,
+                annotation_colors = list(Function = complex_cluster_colors,
+                                         Complex = complex_colors),
+                cellheight = cell_dim_points, cellwidth = cell_dim_points,
+                border_col = NA, na_col = "white")
+p <- ggarrange(p[[4]])
+p + 
+  annotate(geom = 'richtext', label = row_label_df$cluster_labels, 
+           x = x_shift/3, y = row_label_df$y_mean, 
+           #label.padding = grid::unit(rep(0, dim(row_label_df)[1]), "pt"),
+           label.color = NA,
+           hjust = 1, vjust = 0.5) + 
+  theme(plot.margin = unit(c(0,0,0,13), "cm"))
+
+data4heatmap <- list(df4heatmap = df4heatmap,
+                     order4heatmap = order4heatmap,
+                     target_anno = target_anno,
+                     complexes_in_function = complexes_in_function)
+saveRDS(data4heatmap, paste0(outdir, '/', date, '_data4heatmap.RDS'))
+
+```
+
+Labeled heatmap:
+
+```{r final_heatmap_labeled, fig.width = 50, fig.height = 50, echo = F}
+p <- my_heatmap(df4heatmap_lowertri,
+                treeheight_row = 0, treeheight_col = 0,
+                min_c = -0.8, max_c = 0.8,
+                #show_rownames = F, show_colnames = F,
+                cluster_rows = F, cluster_cols = F, 
+                legend = F,annotation_legend = F,
+                annotation_row = row_anno,
+                annotation_colors = list(cluster_function = complex_cluster_colors),
+                cellheight = 10, cellwidth = 10,
+                border_col = NA, na_col = "white")
+p <- ggarrange(p[[4]])
+p
+```
+
+# UMAP
+
+Do a UMAP as well, just in case you need it later
+
+```{r umap_by_complex, echo = F, warning = F, message = F, fig.width = 20, fig.height = 14}
+
+set.seed(0)
+umap_res <- umap(df4heatmap)
+umap_coords <- data.frame(
+  gene = row.names(umap_res$layout),
+  UMAP_1 = umap_res$layout[,1],
+  UMAP_2= umap_res$layout[,2]
+)
+complex_anno_list <- list(
+  "INO80 chromatin remodeling complex" = c('ACTR8', 'INO80', 'INO80B', 'NFRKB'),
+  'RNA N6 methyladenosine' = c('RBM15', 'YTHDF12', 'CBLL1', 'METTL3', 'METTL14', 'ZC3H13', 'SERPINB1'),
+  'NuA4/Tip60-HAT complex' = c("DMAP1", "EP400", "FAM122A", "ING3", "MAX", "MEAF6", 'TRRAP'),
+  'Paf complex' = c('CDC73', 'CTR9', 'PAF1', 'RTF1'),
+  'CCR4-NOT complex' = c('CNOT1', 'CNOT2', 'CNOT3'),
+  'POU5F1' = c("POU5F1"),
+  'Mediator complex' = grep(umap_coords$gene, pattern = '^MED', value = T),
+  'RNA Polymerase II' = grep(umap_coords$gene, pattern = '^POLR2', value = T),
+  'TFIID' = grep(umap_coords$gene, pattern = '^TAF', value = T),
+  'SAGA complex' = c("TADA1", 'SUPT20H'),
+  'Spliceosome' = grep(target_anno %>% dplyr::filter(cluster_function == "RNA processing") %>% .$gene, pattern = "^CPSF", value = T, invert = T),
+                       'Cleavage and polyadenylation factor' = c('CPSF1', 'CPSF4'),
+  "EIF2 complex" = grep(umap_coords$gene, pattern = '^EIF2', value = T),
+   "tRNA ligases" = c('CARS', 'FARSB', 'GARS', 'RARS', 'SARS', 'TARS2'),
+  "TOMM40" = grep(umap_coords$gene, pattern = 'TOMM', value = T),
+  "Mitochondrial ribosome" = grep(umap_coords$gene, pattern = '^MRP', value = T),
+  'Exosome' = grep(umap_coords$gene, pattern = '^EXOSC', value = T),
+  'TREX complex' = grep(umap_coords$gene, pattern = '^THOC', value = T),
+  "EIF3 complex" = grep(umap_coords$gene, pattern = '^EIF3', value = T),
+  "26S proteasome" = grep(umap_coords$gene, pattern = '^PSM', value = T),
+  "Integrator complex\ncleavage module" = c("INTS8", "INTS1", "INTS2", "INTS5")
+)
+
+df4plot <- left_join(umap_coords, target_anno)
+plots_by_complex <- mapply(1:length(complex_anno_list), FUN = function(i){
+  p <- ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, 
+                             label = ifelse(gene %in% complex_anno_list[[i]], gene, ''),
+                             col = ifelse(gene %in% complex_anno_list[[i]], 'y', 'n'))) + 
+    scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+    ggtitle(names(complex_anno_list)[[i]]) + 
+    ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  geom_point(size = 0.4) + theme_bw() + theme(legend.position = 'none')
+}, SIMPLIFY = F)
+
+ggarrange(plots_by_complex, nrow = 4, ncol = 5)
+```
+
+All together:
+
+```{r cleaned_up_umap, echo = F, warning = F, message = F, fig.width = 10, fig.height = 10}
+
+complex_df <- data.frame(
+  gene = unlist(complex_anno_list),
+  complex = rep(names(complex_anno_list), unlist(lapply(complex_anno_list, length)))
+)
+df4plot <- left_join(left_join(umap_coords, target_anno), complex_df)
+
+label_df <- df4plot %>%
+  dplyr::filter(!(is.na(complex))) %>%
+  group_by(complex) %>%
+  summarize(UMAP_1 = mean(UMAP_1), 
+            UMAP_2 = mean(UMAP_2),
+            cluster_function = unique(cluster_function))
+
+
+
+p <- ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2)) + 
+  geom_point(size = 1, alpha = 0.4, 
+                             col = target_col) + 
+  annotate('text', x = label_df$UMAP_1, y = label_df$UMAP_2, label = label_df$complex) + 
+  theme_bw()
+p
+
+data4umap <- list(df4umap = umap_coords,
+                  label_df = label_df,
+                  complex_anno_list = complex_anno_list)
+saveRDS(data4umap, paste0(outdir, '/', date, '_data4umap.RDS'))
+
+```
+
+
+
+# Novel Target-Complex Interactions (The Exciting Stuff)
+## CTU1 x EIF2
+
+```{r ctu1_eif2_double_heatmap, echo = F, warning = F, message = F, fig.width = 5, fig.height =4}
+tg_name <- "CTU1"; complex_nm <- "EIF2 complex"
+target_complex_ixn_of_interest <- target_complex_cor %>%
+  dplyr::filter(gene_1 == tg_name & complex_name == complex_nm)
+genes_in_complex <- unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))#unique(grep(names(magpie_res_split), pattern = "^EIF2", value = T)) #unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))
+
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+df4heatmap_K562 <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_K562) <- colnames(df4heatmap_K562) <- gsub(row.names(df4heatmap_K562), pattern = tg_name, replacement = paste0(tg_name, "*"))
+
+p <- double_heatmap(df4heatmap_iPSCs, df4heatmap_K562, border_col = NA,
+                    min_c = -1, max_c = 1,
+                    treeheight_row = 0, treeheight_col = 0)
+ggarrange(p[[4]])
+```
+
+
+Do the half heatmap as well:
+  
+```{r ctu1_eif2_half_heatmap, echo = F, warning = F, message = F, fig.width = 4.5, fig.height =4 }
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+order4heatmap <- hclust(dist(df4heatmap_iPSCs))$order
+df4heatmap <- df4heatmap_iPSCs[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+p <-my_heatmap(df4heatmap, cluster_rows = F, cluster_cols = F,
+               min_c = -0.6, max_c = 0.6, na_col = 'white', border_color =NA,
+               treeheight_row = 0, treeheight_col = 0, show_rownames = F)
+ggarrange(p[[4]])
+```
+
+
+## PHB x TOMM40
+
+```{r phb_tomm40_double_heatmap, echo = F, warning = F, message = F, fig.width = 5, fig.height =4 }
+tg_name <- "PHB"; complex_nm <- "TOMM40 complex"
+target_complex_ixn_of_interest <- target_complex_cor %>%
+  dplyr::filter(gene_1 == tg_name & complex_name == complex_nm)
+genes_in_complex <- unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))
+
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+df4heatmap_K562 <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_K562) <- colnames(df4heatmap_K562) <- gsub(row.names(df4heatmap_K562), pattern = tg_name, replacement = paste0(tg_name, "*"))
+
+p <- double_heatmap(df4heatmap_iPSCs, df4heatmap_K562,
+                    min_c = -1, max_c = 1, border_col = NA,
+                    treeheight_row = 0, treeheight_col = 0)
+ggarrange(p[[4]])
+
+```
+
+Do the half heatmap as well:
+  
+```{r phb_tomm40_half_heatmap, echo = F, warning = F, message = F, fig.width = 4.5, fig.height =4 }
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+order4heatmap <- hclust(dist(df4heatmap_iPSCs))$order
+df4heatmap <- df4heatmap_iPSCs[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+p <-my_heatmap(df4heatmap, cluster_rows = F, cluster_cols = F,
+               min_c = -1, max_c = 1, na_col = 'white', border_color =NA,
+               treeheight_row = 0, treeheight_col = 0, show_rownames = F)
+ggarrange(p[[4]])
+```
+
+
+## YWHAH x Integrator complex
+
+```{r ywhah_integrator_double_heatmap, echo = F, warning = F, message = F, fig.width = 5, fig.height =4 }
+tg_name <- "YWHAH"; complex_nm <- "Integrator complex, subunit 1"
+target_complex_ixn_of_interest <- target_complex_cor %>%
+  dplyr::filter(gene_1 == tg_name & complex_name == complex_nm)
+genes_in_complex <- unique(grep(names(magpie_res_split), pattern = "^INTS", value = T)) #unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_")) #unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))
+
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+df4heatmap_K562 <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_K562) <- colnames(df4heatmap_K562) <- gsub(row.names(df4heatmap_K562), pattern = tg_name, replacement = paste0(tg_name, "*"))
+
+p <- double_heatmap(df4heatmap_iPSCs, df4heatmap_K562, border_col = NA,
+                    min_c = -1, max_c = 1,
+                    treeheight_row = 0, treeheight_col = 0)
+ggarrange(p[[4]])
+```
+
+Do the half heatmap as well:
+  
+```{r ywhah_integrator_half_heatmap, echo = F, warning = F, message = F, fig.width = 4.5, fig.height =4 }
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+order4heatmap <- hclust(dist(df4heatmap_iPSCs))$order
+df4heatmap <- df4heatmap_iPSCs[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+p <-my_heatmap(df4heatmap, cluster_rows = F, cluster_cols = F,
+               min_c = -0.6, max_c = 0.6, na_col = 'white', border_color =NA,
+               treeheight_row = 0, treeheight_col = 0, show_rownames = F)
+ggarrange(p[[4]])
+```
+
+
+## DDX39B x TREX complex
+
+
+```{r ddx39b_tho_double_heatmap, echo = F, warning = F, message = F, fig.width = 5, fig.height =4 }
+tg_name <- "DDX39B"; complex_nm <- "EIF2 complex"
+target_complex_ixn_of_interest <- target_complex_cor %>%
+  dplyr::filter(gene_1 == tg_name & complex_name == complex_nm)
+genes_in_complex <- unique(grep(names(magpie_res_split), pattern = "^THOC", value = T)) #unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))
+
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+df4heatmap_K562 <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_K562) <- colnames(df4heatmap_K562) <- gsub(row.names(df4heatmap_K562), pattern = tg_name, replacement = paste0(tg_name, "*"))
+
+p <- double_heatmap(df4heatmap_iPSCs, df4heatmap_K562, border_col = NA,
+                    min_c = -0.5, max_c = 0.5,
+                    treeheight_row = 0, treeheight_col = 0)
+ggarrange(p[[4]])
+```
+
+Do the half heatmap as well:
+  
+```{r ddx39b_tho_half_heatmap, echo = F, warning = F, message = F, fig.width = 4.5, fig.height =4 }
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+order4heatmap <- hclust(dist(df4heatmap_iPSCs))$order
+df4heatmap <- df4heatmap_iPSCs[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+p <-my_heatmap(df4heatmap, cluster_rows = F, cluster_cols = F,
+               min_c = -0.6, max_c = 0.6, na_col = 'white', border_color =NA,
+               treeheight_row = 0, treeheight_col = 0, show_rownames = F)
+ggarrange(p[[4]])
+```
+
+## SMC3 x Mediator complex
+
+```{r smc3_mediator_double_heatmap, echo = F, warning = F, message = F, fig.width = 5, fig.height =4 }
+tg_name <- "SMC3"; complex_nm <- "Mediator complex"
+target_complex_ixn_of_interest <- target_complex_cor %>%
+  dplyr::filter(gene_1 == tg_name & complex_name == complex_nm)
+genes_in_complex <- unique(grep(names(magpie_res_split), pattern = "^MED", value = T)) #unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_")) #unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))
+
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+df4heatmap_K562 <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_K562) <- colnames(df4heatmap_K562) <- gsub(row.names(df4heatmap_K562), pattern = tg_name, replacement = paste0(tg_name, "*"))
+
+p <- double_heatmap(df4heatmap_iPSCs, df4heatmap_K562, border_col = NA,
+                    min_c = -0.6, max_c = 0.6,
+                    treeheight_row = 0, treeheight_col = 0)
+ggarrange(p[[4]])
+```
+
+Do the half heatmap as well:
+  
+```{r smc3_mediator_half_heatmap, echo = F, warning = F, message = F, fig.width = 4.5, fig.height =4 }
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+order4heatmap <- hclust(dist(df4heatmap_iPSCs))$order
+df4heatmap <- df4heatmap_iPSCs[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+p <-my_heatmap(df4heatmap, cluster_rows = F, cluster_cols = F,
+               min_c = -0.6, max_c = 0.6, na_col = 'white', border_color =NA,
+               treeheight_row = 0, treeheight_col = 0, show_rownames = F)
+ggarrange(p[[4]])
+```
+
+
+
+
+
+## RAB10 x Paf1 complex
+
+```{r rab10_paf1_double_heatmap, echo = F, warning = F, message = F, fig.width = 5, fig.height =4 }
+tg_name <- "RAB10"; complex_nm <- "Paf complex"
+target_complex_ixn_of_interest <- target_complex_cor %>%
+  dplyr::filter(gene_1 == tg_name & complex_name == complex_nm)
+genes_in_complex <- unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_")) #unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))
+
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+df4heatmap_K562 <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_K562) <- colnames(df4heatmap_K562) <- gsub(row.names(df4heatmap_K562), pattern = tg_name, replacement = paste0(tg_name, "*"))
+
+p <- double_heatmap(df4heatmap_iPSCs, df4heatmap_K562, border_col = NA,
+                    min_c = -0.6, max_c = 0.6,
+                    treeheight_row = 0, treeheight_col = 0)
+ggarrange(p[[4]])
+```
+
+Do the half heatmap as well:
+  
+```{r rab10_paf1_half_heatmap, echo = F, warning = F, message = F, fig.width = 4.5, fig.height =4 }
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+order4heatmap <- hclust(dist(df4heatmap_iPSCs))$order
+df4heatmap <- df4heatmap_iPSCs[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+p <-my_heatmap(df4heatmap, cluster_rows = F, cluster_cols = F,
+               min_c = -0.6, max_c = 0.6, na_col = 'white', border_color =NA,
+               treeheight_row = 0, treeheight_col = 0, show_rownames = F)
+ggarrange(p[[4]])
+```
+
+
+
+
+
+## DDX41 x Spliceosome complex
+
+```{r DDX41_spliceosome_double_heatmap, echo = F, warning = F, message = F, fig.width = 5, fig.height =4 }
+tg_name <- "DDX41"; complex_nm <- "Spliceosome"
+target_complex_ixn_of_interest <- target_complex_cor %>%
+  dplyr::filter(gene_1 == tg_name & complex_name == complex_nm)
+genes_in_complex <- gprofiler_annotations[["GO:0005681"]]#unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_")) #unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))
+
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- ifelse(grepl(row.names(df4heatmap_iPSCs), pattern = tg_name), paste0(tg_name, "*"), "")
+df4heatmap_K562 <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_K562) <- colnames(df4heatmap_K562) <- ifelse(grepl(row.names(df4heatmap_K562), pattern = tg_name), paste0(tg_name, "*"), "")
+
+p <- double_heatmap(df4heatmap_iPSCs, df4heatmap_K562, border_col = NA,
+                    min_c = -0.6, max_c = 0.6,
+                    treeheight_row = 0, treeheight_col = 0)
+ggarrange(p[[4]])
+```
+
+Do the half heatmap as well:
+  
+```{r DDX41_spliceosome_half_heatmap, echo = F, warning = F, message = F, fig.width = 14.5, fig.height =14 }
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+order4heatmap <- hclust(dist(df4heatmap_iPSCs))$order
+df4heatmap <- df4heatmap_iPSCs[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+p <-my_heatmap(df4heatmap, cluster_rows = F, cluster_cols = F,
+               min_c = -0.6, max_c = 0.6, na_col = 'white', border_color =NA,
+               treeheight_row = 0, treeheight_col = 0, show_rownames = F)
+ggarrange(p[[4]])
+```
+
+
+
+
+
+## ELP3 x EIF2
+
+```{r elp3_eif2_double_heatmap, echo = F, warning = F, message = F, fig.width = 5, fig.height =4 }
+tg_name <- "ELP3"; complex_nm <- "EIF2 complex"
+target_complex_ixn_of_interest <- target_complex_cor %>%
+  dplyr::filter(gene_1 == tg_name & complex_name == complex_nm)
+genes_in_complex <- unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))#unique(grep(names(magpie_res_split), pattern = "^EIF2", value = T)) #unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))
+
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+df4heatmap_K562 <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_K562) <- colnames(df4heatmap_K562) <- gsub(row.names(df4heatmap_K562), pattern = tg_name, replacement = paste0(tg_name, "*"))
+
+p <- double_heatmap(df4heatmap_iPSCs, df4heatmap_K562, border_col = NA,
+                    min_c = -1, max_c = 1,
+                    treeheight_row = 0, treeheight_col = 0)
+ggarrange(p[[4]])
+```
+
+Do the half heatmap as well:
+  
+```{r elp3_eif2_half_heatmap, echo = F, warning = F, message = F, fig.width = 4.5, fig.height =4 }
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+order4heatmap <- hclust(dist(df4heatmap_iPSCs))$order
+df4heatmap <- df4heatmap_iPSCs[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+p <-my_heatmap(df4heatmap, cluster_rows = F, cluster_cols = F,
+               min_c = -0.6, max_c = 0.6, na_col = 'white', border_color =NA,
+               treeheight_row = 0, treeheight_col = 0, show_rownames = F)
+ggarrange(p[[4]])
+```
+
+## DNAJA3 x EIF2
+
+```{r DNAJA3_eif2_double_heatmap, echo = F, warning = F, message = F, fig.width = 5, fig.height =4 }
+tg_name <- "DNAJA3"; complex_nm <- "EIF2 complex"
+target_complex_ixn_of_interest <- target_complex_cor %>%
+  dplyr::filter(gene_1 == tg_name & complex_name == complex_nm)
+genes_in_complex <- unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))#unique(grep(names(magpie_res_split), pattern = "^EIF2", value = T)) #unlist(strsplit(target_complex_ixn_of_interest$gene_2, "_"))
+
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+df4heatmap_K562 <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_K562) <- colnames(df4heatmap_K562) <- gsub(row.names(df4heatmap_K562), pattern = tg_name, replacement = paste0(tg_name, "*"))
+
+p <- double_heatmap(df4heatmap_iPSCs, df4heatmap_K562, border_col = NA,
+                    min_c = -1, max_c = 1,
+                    treeheight_row = 0, treeheight_col = 0)
+ggarrange(p[[4]])
+```
+
+Do the half heatmap as well:
+  
+```{r dnaja3_eif2_half_heatmap, echo = F, warning = F, message = F, fig.width = 4.5, fig.height =4 }
+df4heatmap_iPSCs <- target_target_cor_anno %>%
+  dplyr::select(c('gene_1', 'gene_2', 'cor_all')) %>%
+  dplyr::filter(gene_1 %in% c(tg_name, genes_in_complex) & gene_2 %in% c(tg_name, genes_in_complex)) %>%
+  reshape2::dcast(gene_1 ~ gene_2, value.var = 'cor_all') %>%
+  column_to_rownames('gene_1') %>%
+  as.matrix()
+row.names(df4heatmap_iPSCs) <- colnames(df4heatmap_iPSCs) <- gsub(row.names(df4heatmap_iPSCs), pattern = tg_name, replacement = paste0(tg_name, "*"))
+order4heatmap <- hclust(dist(df4heatmap_iPSCs))$order
+df4heatmap <- df4heatmap_iPSCs[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+p <-my_heatmap(df4heatmap, cluster_rows = F, cluster_cols = F,
+               min_c = -0.6, max_c = 0.6, na_col = 'white', border_color =NA,
+               treeheight_row = 0, treeheight_col = 0, show_rownames = F)
+ggarrange(p[[4]])
+```
+
+
+
+
+
+
+
+
+
+
+

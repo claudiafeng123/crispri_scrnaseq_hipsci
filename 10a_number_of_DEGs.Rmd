@@ -1,0 +1,344 @@
+---
+title: "What predicts the number of downstream genes of a target?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  utils_path: "../../io/Magpie_Utils.R"
+  io_path: "../../io/Magpie_io.R"
+  date: "2022-08-15"
+  section_name: "10a_number_of_DEGs"
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+
+# Top Hits
+
+```{r top_targets, fig.width=8, fig.height=10, warning=FALSE, message=FALSE, echo = F}
+df4plot <- target_df %>% slice_max(order_by = n_downstream_excl_target, n = 25)
+ggplot(df4plot, aes(y = reorder(gene, n_downstream_excl_target), x = n_downstream_excl_target, fill = group)) + 
+  xlab('Number of Downstream DE Genes in Trans') + ylab('') + 
+  scale_fill_manual(values = cols4Pools) + 
+  geom_bar(stat = 'identity') + theme_bw()
+## do strong and moderate
+df4plot <- target_df %>% filter(group %in% c("Moderate", "Strong"))
+
+df4plot <- split.data.frame(df4plot, f = df4plot$group)
+df4plot <- mapply(df4plot, FUN = function(df){
+  rtn <- df %>% slice_max(order_by = n_downstream_excl_target, n = 25) %>%
+    mutate(group = ifelse(group == "Moderate", "Non-Fitness Genes", "Fitness Genes"))
+  p <- ggplot(rtn, aes(y = reorder(gene, n_downstream_excl_target), x = n_downstream_excl_target, fill = group)) + 
+  facet_wrap(~group) + 
+  xlab('Number of Downstream DE Genes in Trans') + ylab('') + 
+  scale_fill_manual(values = cols4Pools_Renamed) + 
+  geom_bar(stat = 'identity') + theme_bw() + theme(legend.position = 'none')
+return(p)
+}, SIMPLIFY = F)
+ggpubr::ggarrange(plotlist = df4plot, ncol = 2)
+#target_df %>% slice_max(order_by = n_downstream_excl_target, n = 25)
+
+
+```
+
+
+
+
+# Prediction for Top Hits
+
+## GO Enrichment
+
+```{r}
+targets_with_effects <- filter(target_df, !(is.na(n_downstream_excl_target))) %>% .$gene
+
+
+go_terms2consider <- gprofiler_annotations[which(unlist(lapply(gprofiler_annotations, FUN = function(x){length(which(x %in% targets_with_effects))})) > 10)]
+
+enriched_go_terms <- lapply(1:length(go_terms2consider), FUN = function(i){
+  genes_in_term <- go_terms2consider[[i]]
+  genes_in_term <- genes_in_term[which(genes_in_term %in% targets_with_effects)]
+  vec4test <- target_df$n_downstream_excl_target; names(vec4test) <- target_df$gene; vec4test <- vec4test[!(is.na(vec4test))]
+  rtn <- t.test(vec4test[genes_in_term], vec4test[which(!(names(vec4test) %in% genes_in_term))], alternative = "greater")$p.value
+  return(rtn)
+})
+enriched_go_terms <- data.frame(
+  id = names(go_terms2consider),
+  term = gprofiler_terms$Term[match(names(go_terms2consider), gprofiler_terms$GO_ID)],
+  pval = unlist(enriched_go_terms)
+) %>% mutate(pval_adj = p.adjust(pval, method = "BH"))
+
+df4plot <- filter(enriched_go_terms, 
+                  !(is.na(term))) %>%
+  slice_min(pval_adj, n = 25)
+ggplot(df4plot, aes(x = -log10(pval_adj), y = reorder(term, -pval_adj))) +
+  ylab("") + xlab("-log10(p-value)") + 
+  geom_bar(stat = 'identity') + theme_bw()
+
+fwrite(enriched_go_terms, paste0(outdir, '/', params$date, '_enriched_go_terms.tsv', sep = '\t'))
+
+```
+
+### Transcription Gene # of DEGs
+
+```{r go_gene_expr_vs_n_deg, fig.width = 5, fig.height = 6}
+
+df4plot <- target_df %>%
+  dplyr::select(c('gene', 'n_downstream_excl_target')) %>%
+  dplyr::mutate(is_expression_gene = ifelse(gene %in% gprofiler_annotations[['GO:0010467']], "Implicated in Gene Expression", "Not Implicated in Gene Expression"))
+
+ggplot(df4plot, aes(x = n_downstream_excl_target, fill = is_expression_gene)) + 
+  scale_x_log10() +scale_y_log10() + 
+  facet_wrap(~is_expression_gene, scale = 'free_y', ncol = 1) + 
+  ylab("# of Target Knockdowns") + xlab("# of Downstream Effects") + 
+  geom_histogram(bins = 50) + theme_bw() + theme(legend.position = 'none')
+
+```
+
+
+
+## On-Target Effect
+
+Does on-target effect predict # of DEG?
+
+```{r}
+df4plot <- target_df %>%
+  mutate(is_target_downreg = (target_lfc < -sig_abs_lfc_thresh & pval_adj < sig_pval_thresh)) %>%
+  dplyr::select(c('gene', 'is_target_downreg', 'n_downstream_excl_target')) %>%
+  dplyr::filter(!(is.na(is_target_downreg)))
+ggplot(df4plot, aes(x = n_downstream_excl_target, fill = is_target_downreg)) + 
+  scale_x_log10() + 
+  geom_histogram(bins = 60, position = 'dodge') + theme_bw()
+```
+# Prediction Methods
+## Check Where there is missing data
+
+```{r}
+
+na_entries <- as.data.frame(bind_rows(lapply(1:dim(target_df)[2], FUN = function(j){
+  return(table(c("TRUE", "FALSE", is.na(target_df[,j]))) - 1)
+})))
+row.names(na_entries) <- colnames(target_df)
+slice_max(na_entries, order_by = `TRUE`, n = 10)
+```
+
+Remove the whole/half life stuff later because there's not enough stuff available.
+
+## Correlation matrix
+
+Should give an idea of what explains number of downstream effects and what factors to include.
+```{r}
+X <- target_df %>% dplyr::filter(!is.na(n_downstream_excl_target)) %>%
+  dplyr::mutate(in_protein_complex = ifelse(num_omnipath_protein_complexes >= 1, 1, 0)) %>%
+  dplyr::select('# of Downstream DE Genes' = n_downstream_excl_target,
+                '# of Cells' = n_cells,
+                'Essentiality in cancer lines' = mean_effect_depmap,
+                'Variance of essentiality in cancer lines' = var_effect_depmap,
+                'Essentiality in iPSCs (DPI3)' = pre_day3_lfc_mean,
+                'Essentiality in iPSCs (DPI4)' = pre_day4_lfc_mean,
+                'Essentiality in iPSCs (DPI5)' = pre_day5_lfc_mean,
+                'Essentiality in iPSCs (DPI9)' = pre_day9_lfc_mean,
+                'Essentiality in iPSCs (DPI10)' =  pre_day10_lfc_mean,
+                '# of co-essentiality modules' = n_coess_modules,
+                'Wild-type expression' = control_norm_expr,
+                '# of protein interactions' = num_omnipath_interactions,
+                '# of protein complexes' = in_protein_complex,
+                '# of hallmark gene sets' = num_msigdb_gene_sets,
+                '# of trans genes' = num_eQTLs_cis_gene,
+                '# of transcription factor targets' = num_dorothea_source,
+                'Expression heritability' = mean_var_expl_by_donor_kilpinen,
+                'LFC of target' = target_lfc,
+                'Variance of expression' = sc_variance,
+                'Conservation score' = Conservation,
+                '# of GO terms' = num_go_terms,
+                'Protein turnover time' = whole_turnover,
+                'Protein half life' = whole_half_life) %>%
+  as.matrix()
+dim(X)
+
+```
+
+```{r correlation_matrix, fig.height=6, fig.width=10}
+n_targets_av <- apply(X,2, function(c) sum(!is.na(c))) # targets per annotation
+n_targets_av
+summary(n_targets_av)
+sum(apply(is.na(X),1, function(r) sum(r))==0) # targets with all annotations
+
+cor_mat <- cor(X, method = "spearman", use = "pairwise.complete")
+#
+my_heatmap(t(cor_mat), show_colnames = F, min_c= -1, max_c = 1, midpoint = 0, treeheight_row = 0, treeheight_col = 0)
+
+# cor(X[,c("n_downstream_excl_target", "growth_lfc_d10")], method = "spearman")
+#cor_mat["n_downstream_excl_target", "growth_lfc_d10"] # from 2B
+```
+
+```{r correlation_barplot, fig.width=8, fig.height=6}
+
+pvals_cor_test <- sapply(row.names(cor_mat),
+                         function(nm) cor.test(X[,nm], X[,"# of Downstream DE Genes"], method = "spearman")$p.value)
+pval_adj <- p.adjust(pvals_cor_test, method = "BH")
+
+## the barplot
+df4plot <- data.frame(
+  Correlation = cor_mat["# of Downstream DE Genes", row.names(cor_mat), drop = FALSE] %>% as.vector(),
+  Name = row.names(cor_mat),
+pval_adj = pval_adj[match(row.names(cor_mat), names(pval_adj))]
+) %>% 
+  dplyr::filter(Name != "# of Downstream DE Genes")
+
+ggplot(df4plot, aes(x = reorder(Name, Correlation), y = Correlation,
+                    fill = ifelse(pval_adj < 0.05, "sig", "not sig"))) + 
+  scale_fill_manual(values = c("sig" = 'navy', 'not sig' = 'gray')) +
+  xlab("") + ylab("Correlation") + ggtitle("Predictors of Transcriptional Change due to Knockdown") + 
+  geom_text(aes(label=ifelse(pval_adj<0.001,"***", ifelse(pval_adj<0.01,"**", ifelse(pval_adj<0.05,"*","")))), 
+              vjust=0.6 - sign(df4plot$Correlation)/2) + 
+  geom_bar(stat = 'identity') + theme_bw()+ theme(legend.position = 'none',
+                                                  axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+                                                  plot.margin = margin(0.5,0.5,1,2, "cm"))
+
+
+
+```
+
+
+
+
+
+
+## Plots of indivdual covariates
+
+```{r indiv_plots, warning=FALSE}
+names_var <- colnames(X)[which(colnames(X) != '# of Downstream DE Genes')]
+for(nm in names_var){
+  print(qplot(X[,nm], X[, "# of Downstream DE Genes"]) +
+          geom_pointdensity() +
+          ggpubr::stat_cor(method = "spearman", cor.coef.name = "rho") +
+          xlab(nm) + ylab("# DEGs") + theme_bw() +
+          scale_y_log10())
+}
+```
+
+
+
+
+
+## Poisson GLM
+```{r Poisson_glm, eval = F}
+target_df_scaled <- apply(select(df4model, where(is.numeric)),2,scale) %>%
+  as.data.frame()
+target_df_scaled$n_downstream_excl_target <- df4model$n_downstream_excl_target
+# fit a model to predict number of downstream effects
+fit <- glm(n_downstream_excl_target ~  n_cells + 
+             growth_lfc_d3 + growth_lfc_d5 + growth_lfc_d10 +
+             mean_expression_control + 
+             is_expr_gene,
+           data = target_df_scaled, family = "poisson")
+
+pvals <- melt(p.adjust(summary(fit)$coefficients[,4], method = "BH"), value.name = "pval_adj") %>%
+  rownames_to_column("variable") 
+df4plot <- melt(coef(fit), value.name = "glm_coef") %>%
+  rownames_to_column("variable") %>%
+  left_join(pvals, by = "variable") %>% 
+  filter(variable != "(Intercept)") %>%
+  mutate(variable = factor(variable, levels = names(sort(fit$coefficients)))) %>%
+  dplyr::filter(variable != "n_cells")
+
+
+ 
+ggplot(df4plot, aes(x= variable, y = glm_coef, fill = glm_coef <0)) +
+  geom_bar(stat = "identity") + coord_flip() +
+  geom_text(aes(x= variable, y = glm_coef + 0.1 * sign(glm_coef),
+                label = ifelse(pval_adj<0.001,"***", ifelse(pval_adj<0.01,"**", ifelse(pval_adj<0.05,"*",""))))) +
+  theme_bw() + scale_fill_manual(values = c("TRUE" = "navy", "FALSE" = "darkred")) +
+  guides(fill = "none")
+
+```
+
+## Elastic net
+```{r Poisson_elastic_net, eval = F}
+
+df4model <- target_df %>% dplyr::filter(!is.na(n_downstream_excl_target)) %>%
+  dplyr::mutate(in_protein_complex = ifelse(num_omnipath_protein_complexes >= 1, 1, 0),
+                gene_expr_gene = ifelse(gene %in% gprofiler_annotations[['GO:0010468']], 1, 0),
+                mean_effect_depmap = -mean_effect_depmap,
+                pre_day3_lfc_mean = -pre_day3_lfc_mean,
+                pre_day5_lfc_mean = -pre_day5_lfc_mean,
+                pre_day10_lfc_mean = -pre_day10_lfc_mean) %>%
+  dplyr::select('# of Downstream DE Genes' = n_downstream_excl_target,
+                '# of Cells' = n_cells,
+                'Essentiality in cancer lines' = mean_effect_depmap,
+                #'Variance of Essentiality in Cancer Lines' = var_effect_depmap,
+                'Essentiality in iPSCs (DPI 3)' = pre_day3_lfc_mean,
+                #'Essentiality in iPSCs (DPI4)' = pre_day4_lfc_mean,
+                'Essentiality in iPSCs (DPI 5)' = pre_day5_lfc_mean,
+                #'Essentiality in iPSCs (DPI9)' = pre_day9_lfc_mean,
+                'Essentiality in iPSCs (DPI 10)' =  pre_day10_lfc_mean,
+                '# of co-essentiality modules' = n_coess_modules,
+                'Wild-type expression' = control_norm_expr,
+                '# of protein interactions' = num_omnipath_interactions,
+                'Protein complex member' = in_protein_complex,
+                '# hallmark gene sets' = num_msigdb_gene_sets,
+                '# of trans genes' = num_eQTLs_cis_gene,
+                '# of transcription factor targets' = num_dorothea_source,
+                'Expression heritability' = mean_var_expl_by_donor_kilpinen,
+                'Target gene down-regulation' = target_lfc,
+                'Variance of expression' = sc_variance,
+                'Conservation score' = Conservation,
+                '# of GO terms' = num_go_terms,
+                'Member of GO gene expression term' = gene_expr_gene)
+complete <- apply(df4model ,1, function(x) !any(is.na(x)))
+y <- df4model$`# of Downstream DE Genes`
+y <- y[complete]
+X <- model.matrix( as.formula(
+  paste0( '~ 0 + `', 
+                                     paste0(colnames(df4model %>% dplyr::select(-one_of('# of Downstream DE Genes'))), collapse = '` + `'),
+                                     '`')),
+             data = df4model[complete,])
+                                    
+X <- scale(X)
+fit <- glmnet::cv.glmnet(y =y ,X, family = "poisson", alpha = 0.1)
+in_order_vars <- gsub(names(sort(coef(fit)[,1])), pattern = '`', replacement = '')
+df4plot <- melt(coef(fit), value.name = "glmnet_coef")
+row.names(df4plot) <- gsub(row.names(df4plot), pattern = '`', replacement = '')
+df4plot <- df4plot %>%
+  rownames_to_column("variable") %>% dplyr::filter(variable != "(Intercept)") %>%
+  mutate(variable = factor(variable, levels = in_order_vars))
+
+  ggplot(df4plot, aes(x= variable, y = glmnet_coef, fill = glmnet_coef <0)) +
+  geom_bar(stat = "identity") + coord_flip() +
+  theme_bw() + scale_fill_manual(values = c("TRUE" = "navy", "FALSE" = "darkred")) +
+  guides(fill = "none")
+  
+saveRDS(df4plot, paste0(outdir, '/', params$date, '_elastic_net_res.RDS'))
+
+```
+
+A more polished plot:
+
+```{r glmnet_bar_no_technical}
+glmnet_res <- readRDS(paste0(outdir, '/', params$date, '_elastic_net_res.RDS'))
+df4plot <- glmnet_res %>% 
+  dplyr::filter(variable != "(Intercept)" & variable != "# of Cells" &
+                  !(variable %in% c("# of Co-essentiality Modules")))
+
+  ggplot(df4plot, aes(x= reorder(variable, abs(glmnet_coef)), y = abs(glmnet_coef), 
+                      fill = ifelse(glmnet_coef <0, "Fewer DEG", "More DEG"))) +
+  geom_bar(stat = "identity") + coord_flip() +
+    ylab("GLM Coefficient") + xlab("") + ggtitle("Predicting the Effect Size of Knockdown") + 
+  theme_bw() + scale_fill_manual('',values = c("More DEG" = target_col, "Fewer DEG" = 'gray')) 
+  
+```
+
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
+

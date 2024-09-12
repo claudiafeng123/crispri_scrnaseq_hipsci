@@ -1,0 +1,346 @@
+---
+title: "Make target-level summary data frame"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  home_folder: "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  experiment_name: "Magpie"
+  date: "2022-08-15"
+  section_name: "7b_target_summary"
+  padj_th: 0.1
+  abs_lfc_th: 0.1
+  
+---
+
+
+This Rmarkdown produces a dataframe containing useful information for each target gene in Magpie. 
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(reshape2)
+library(data.table)
+
+#HomeFolder <- "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+#date <- "2022-05-31"
+#section_name <- "7b_target_summary"
+HomeFolder <- params$home_folder
+date <- params$date
+print(date)
+source(paste0(HomeFolder, "scripts/io/", params$experiment_name, "_io.R"))
+source(paste0(HomeFolder, "scripts/io/Magpie_Utils.R"))
+
+# outdirs
+section_name <- params$section_name
+outdir <- file.path(OutFolder, section_name)
+plotsdir <- file.path(HTMLFolder, "pipeline/", section_name, "/")
+if(!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+if(!dir.exists(plotsdir)) dir.create(plotsdir, recursive = TRUE)
+#date_new <- params$date #format(Sys.Date(), '%Y-%m-%d')
+
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+# Add target gene information from guide metadata
+```{r load_guide_meta}
+if (ExperimentName == "Pica"){
+  GuideMetadata <- fread(GuideMetadataPath)
+  all_targets <- unique(GuideMetadata$gene)
+MagpieGuideMetadata <- fread(paste0(file.path(FilesFolder, "../Magpie/MagpieLibrary_forAnalysis.tsv"))) %>% 
+    dplyr::filter(gene %in% all_targets)
+} else {
+  GuideMetadata <- fread(GuideMetadataPath)
+  all_targets <- unique(GuideMetadata$gene)
+  inlet_strengths <- c("Moderate", "Strong")
+length(all_targets)
+
+}
+
+# make gene-level meta dataframe
+gene_level_cols <- GuideMetadata %>% group_by(gene)  %>%
+  summarise_all(function(x) length(unique(x))) 
+gene_level_cols <- colnames(gene_level_cols)[apply(gene_level_cols, 2, function(x) all(x == 1))]
+target_df <- dplyr::select(GuideMetadata, c("gene", all_of(gene_level_cols)))
+target_df <- target_df[!duplicated(target_df)]
+target_df <- as.data.frame(target_df)
+```
+
+# Add number of assigned cells per target
+```{r obs_targets}
+metadir <- file.path(OutFolder, "5a_combine") 
+metafiles <- grep(grep(list.files(metadir, pattern = "meta"),
+                       pattern = "perturbed", value = T),
+                  pattern = params$date, value = T)
+#metafiles <- paste0(date, "_", inlet_strengths,  "_perturbed_cells_combined_meta.csv")
+
+if(all(file.exists(file.path(metadir, metafiles)))) {
+  metadata <- mapply(metafiles, FUN = function(metafile){
+    fread(file.path(metadir, metafile))
+  }, SIMPLIFY = F)
+  metadata <- as.data.frame(bind_rows(metadata))
+  metadata <- mutate(metadata, target_gene_name = gsub("_", "-", target_gene_name))
+  
+  if (ExperimentName == "Magpie"){
+    df <- metadata %>% group_by(target_gene_name) %>%
+    summarize(n_cells = n(),
+              n_donors = length(unique(donor)),
+              n_lines = length(unique(cell_line)),
+              n_time_points = length(unique(Timepoint)),
+              n_pools = length(unique(Pool)),
+              n_batches = length(unique(Batch)))
+  
+  } else if (ExperimentName == "Pica"){
+    df <- metadata %>% 
+      mutate(to_match = paste0(target_gene_name, "_", cell_line)) %>%
+      group_by(to_match) %>%
+    summarize(n_cells = n(),
+              cell_line = unique(cell_line),
+              target_gene_name = unique(target_gene_name),
+              donor = unique(donor)) %>%
+      group_by(target_gene_name) %>%
+      mutate(n_cells_total = sum(n_cells)) %>%
+      ungroup() %>%
+      dplyr::filter(n_cells > min_cells_per_gene_per_donor) %>%
+      group_by(target_gene_name) %>%
+      summarize(n_cells_for_analysis = sum(n_cells),
+                n_cells_total = unique(n_cells_total),
+                n_donors = length(unique(donor)),
+              donors = paste(unique(donor), collapse = ';'),
+    
+              n_lines = length(unique(cell_line)),
+              cell_lines = paste(unique(cell_line), collapse = ';'),
+              n_paired_lines = length(which(table(unlist(lapply(strsplit(unique(cell_line), "_"), "[[", 1))) == 2)),
+              paired_lines = paste(names(table(unlist(lapply(strsplit(unique(cell_line), "_"), "[[", 1))))[which(table(unlist(lapply(strsplit(unique(cell_line), "_"), "[[", 1))) == 2)] , collapse = ';' )
+    )
+              
+              
+              
+              
+  
+    
+  }
+  
+  target_df <- left_join(target_df, df, by = c("gene" = "target_gene_name"))
+  for(cnm in colnames(target_df)[grepl("n_", colnames(target_df))]) {
+    target_df[,cnm][is.na(target_df[,cnm])] <- 0
+  }
+} else {
+  print("No metadata on assigned cells found.")
+}
+```
+
+# Add growth effect summaries per target
+```{r growth_effects}
+# add growth effects
+growth <- dplyr::select(GuideMetadata, "gene", starts_with("pre_day")) %>%
+  group_by(gene) %>% summarise_all(.funs = c("mean", "var"))
+target_df <- left_join(target_df, growth, by = "gene")
+```
+
+# Add DepMap summaries per target
+```{r depmap}
+depmap <- MagpieGuideMetadata %>%
+  group_by(gene) %>%
+  summarise(depmap_var = unique(var_effect_depmap),
+            depmap_mean = unique(mean_effect_depmap)) %>%
+  ungroup()
+target_df <- left_join(target_df, depmap, by = "gene")
+```
+
+# Annotate by co-essentiality modules
+Co-essentiality modules are taken from (Wainberg et al)[https://www.nature.com/articles/s41588-021-00840-z#Sec24]
+```{r wainberg}
+Wainberg_modules <- read.table(file.path(ResourcesFolder,
+                                         "coessentiality/Wainberg2021_Gene_Modules.tsv")) %>% t()
+targets_in_Wainberg <- intersect(all_targets, colnames(Wainberg_modules))
+
+dfWainberg <- reshape2::melt(Wainberg_modules[,targets_in_Wainberg],
+               varnames = c("module", "target"), value.name = "present") %>%
+  dplyr::filter(present == 1) %>% dplyr::select(-present)
+dfWainberg <- mutate(dfWainberg, module = as.numeric(sub("X","", module)))
+
+target_df <- dfWainberg %>% group_by(target) %>%
+  summarize(coess_modules = paste(module, collapse = ";"),
+            n_coess_modules = length(unique(module))) %>%
+  left_join(target_df, ., c("gene" = "target"))
+```
+
+# Add in Variance of Expression
+
+```{r add_sc_coexpression}
+sc_variance_fnm <- sort(grep(list.files(file.path(OutFolder, "Preprocess_External_Datasets", "coexpression"), pattern = "sc_regressed_variance_per_gene"), pattern = params$date, value = T), decreasing = T)
+sc_variance <- as.data.frame(fread(file.path(OutFolder, "Preprocess_External_Datasets", "coexpression", sc_variance_fnm)))
+names(sc_variance) <- c("gene", "sc_variance")
+sc_variance$gene <- unlist(lapply(strsplit(sc_variance$gene, ":"), "[[", 2))
+target_df$sc_variance <- sc_variance[,2][match(target_df$gene, sc_variance[,1])]
+```
+
+# Annotate by Omnipath
+
+```{r add_omnipath}
+
+#interactions
+omnipath_complexes_fnm <- sort(grep(list.files(file.path(OutFolder, "Preprocess_External_Datasets", "omnipath"), pattern = paste0("omnipath-interactions_annotated-guides-")), pattern = paste0(date, "-version.tsv.gz"), value = T), decreasing = T)[1]
+omnipath_complexes <- fread(file.path(OutFolder, "Preprocess_External_Datasets", "omnipath", omnipath_complexes_fnm))
+target_df$num_omnipath_interactions <- omnipath_complexes$num_omnipath_interactions[match(target_df$gene, omnipath_complexes$gene)]
+
+
+#complexes
+omnipath_complexes_fnm <- sort(grep(list.files(file.path(OutFolder, "Preprocess_External_Datasets", "omnipath"), pattern = paste0("protein-complexes_annotated-guides-")), pattern = paste0(date, "-version.tsv.gz"), value = T), decreasing = T)[1]
+omnipath_complexes <- fread(file.path(OutFolder, "Preprocess_External_Datasets", "omnipath", omnipath_complexes_fnm))
+target_df$num_omnipath_protein_complexes <- omnipath_complexes$num_omnipath_interactions[match(target_df$gene, omnipath_complexes$gene)]
+```
+
+# Annotate by Other Data
+
+```{r add_other_data_sources}
+
+other_data_sources <- c("dorothea", "msigdb_gene_sets", "eQTLs")
+
+for (other_data_source in other_data_sources){
+  fnm <- sort(grep(list.files(file.path(OutFolder, "Preprocess_External_Datasets", other_data_source), pattern = paste0("annotated-guides")), pattern = paste0(date, "-version.tsv.gz"), value = T), decreasing = T)[1]
+  annotations <- fread(file.path(OutFolder, "Preprocess_External_Datasets", other_data_source, fnm))
+  if (other_data_source == "dorothea"){
+    target_df$num_dorothea_source <- annotations$num_dorothea_source[match(target_df$gene, annotations$gene)]
+    target_df$num_dorothea_target <- annotations$num_dorothea_target[match(target_df$gene, annotations$gene)]
+    target_df$num_dorothea_genes <- annotations$num_dorothea_genes[match(target_df$gene, annotations$gene)]
+  } else if (other_data_source == "msigdb_gene_sets"){
+    target_df$num_msigdb_gene_sets <- annotations$num_hallmark_gene_sets[match(target_df$gene, annotations$gene)]
+  } else if (other_data_source == "eQTLs"){
+    target_df$num_eQTLs_trans_gene <- annotations$num_trans_gene_pairs[match(target_df$gene, annotations$gene)]
+    target_df$num_eQTLs_cis_gene <- annotations$num_cis_gene_pairs[match(target_df$gene, annotations$gene)]
+    target_df$num_eQTLs_genes <- annotations$num_eQTL_gene_pairs[match(target_df$gene, annotations$gene)]
+  }
+}
+
+```
+
+# Add target LFC and number of DEGs
+
+
+## Subset to target LFC
+```{r subset_lfc}
+# make a target metadata frame
+lfcs_on_target <- lfcs %>% dplyr::filter(is_on_target)
+is_on_target <- lfcs$is_on_target
+write.csv(lfcs_on_target, file = file.path(outdir, paste0(date, "_target_lfcs.csv")))
+```
+
+## Add LFC to table
+```{r add_lfc}
+target_df <- left_join(target_df, lfcs_on_target, by = c("gene" = "target"))
+#target_df <- dplyr::select(target_df, -n_perturbed)
+target_df <- rename(target_df, target_lfc = lfc)
+target_df <- rename(target_df, target_lfc_unadjusted = lfc_unadjusted)
+```
+
+## Add number of downstream genes to table
+```{r add_n_deg}
+df_agg <- lfcs %>%
+  group_by(target) %>%
+  summarize(n_downstream = sum(pval_adj < params$padj_th & abs(lfc) > params$abs_lfc_th))
+
+df_agg_excl_target <- lfcs[!is_on_target,] %>%
+  group_by(target) %>%
+  summarize(n_downstream_excl_target = sum(pval_adj < params$padj_th & abs(lfc) > params$abs_lfc_th),
+            n_downregulated_excl_target = sum(pval_adj < params$padj_th & lfc < -params$abs_lfc_th),
+            n_upregulated_excl_target = sum(pval_adj < params$padj_th & lfc > params$abs_lfc_th))
+
+target_df <- left_join(target_df, df_agg, by = c("gene" = "target"))
+target_df <- left_join(target_df, df_agg_excl_target, by = c("gene" = "target"))
+
+
+```
+
+## Add number of targets down-regulating the target
+
+```{r}
+
+df_agg <- lfcs %>%
+  group_by(downstream_gene_name) %>%
+  summarize(n_targets_that_de = sum(pval_adj < params$padj_th & abs(lfc) > params$abs_lfc_th))
+
+df_agg_excl_target <- lfcs[!is_on_target,] %>%
+  group_by(downstream_gene_name) %>%
+  summarize(n_targets_that_de_excl_target = sum(pval_adj < params$padj_th & abs(lfc) > params$abs_lfc_th))
+
+target_df <- left_join(target_df, df_agg, by = c("gene" = "downstream_gene_name"))
+target_df <- left_join(target_df, df_agg_excl_target, by = c("gene" = "downstream_gene_name"))
+
+df_agg <- lfcs %>%
+  group_by(downstream_gene_name) %>%
+  summarize(n_targets_that_down = sum(pval_adj < params$padj_th & lfc < -params$abs_lfc_th))
+
+df_agg_excl_target <- lfcs[!is_on_target,] %>%
+  group_by(downstream_gene_name) %>%
+  summarize(n_targets_that_down_excl_target = sum(pval_adj < params$padj_th & lfc < -params$abs_lfc_th))
+
+target_df <- left_join(target_df, df_agg, by = c("gene" = "downstream_gene_name"))
+target_df <- left_join(target_df, df_agg_excl_target, by = c("gene" = "downstream_gene_name"))
+
+```
+
+# Add HipSci heritabilities
+Adding variance explained by donor in the original HipSci gene expression data ([paper](https://www.nature.com/articles/nature22403#Abs1)].
+```{r}
+h <- read.csv(file.path(ResourcesFolder, "heritability/expr_variance_expl_by_donor.csv"))
+target_df <- left_join(target_df, h, by = "gene")
+```
+
+
+## Add conservation scores
+```{r}
+# TODO this should be in step 7b and part of the target_df
+cons_scores <- read.csv(file.path(ResourcesFolder,
+                                  "conservation_scores",
+                                  "conservation_scores_phastCons100way.UCSC.hg38.csv"))
+
+ target_df <- left_join(target_df, cons_scores, by = c("gene" = "GeneSymbol"))
+ table(is.na(target_df$Conservation))
+```
+
+## Number of GO Terms
+
+```{r}
+gprofiler2_annotations <- readRDS(paste0(ResourcesFolder, "/gprofiler/gprofiler_full_hsapiens.ENSG.RDS"))
+
+num_go_anno <- table(unlist(gprofiler2_annotations[grep(names(gprofiler2_annotations), pattern = "GO:")]))
+target_df <- target_df %>% 
+  mutate(num_go_terms = as.numeric(num_go_anno)[match(gene, names(num_go_anno))])%>%
+  mutate(num_go_terms = ifelse(is.na(num_go_terms), 0, num_go_terms))
+```
+
+
+## Add Protein Half Lives
+
+```{r}
+protein_half_lives <- fread(paste0(ResourcesFolder, "/protein_complexes/hela_half_lives_2023-03-22_download.csv"))
+
+target_df <- target_df %>% 
+  mutate(whole_turnover = protein_half_lives$`Whole Turnover`[match(gene, protein_half_lives$Gene)]) %>%
+  mutate(whole_half_life = protein_half_lives$`Whole Half-Life`[match(gene, protein_half_lives$Gene)]) 
+```
+
+# Save table
+```{r}
+# sanity checks
+dplyr::filter(target_df, gene %in% target_df$gene[duplicated(target_df$gene)])
+stopifnot(!any(duplicated(target_df)))
+stopifnot(!any(duplicated(target_df$gene)))
+```
+
+```{r save}
+write.csv(target_df,
+          file = file.path(outdir, paste0(date, "_target_meta_data.csv")),
+          row.names = FALSE)
+write.csv(unlist(params),
+          file = file.path(outdir, paste0(date, "_params_for_target_meta_data.csv")),
+          row.names = TRUE)
+```
+
+```{r sessionInfo}
+sessionInfo()
+```
+

@@ -1,0 +1,179 @@
+---
+title: "What overlap is there (if any) with trans eQTLs?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  section_name : "10f_trans_eQTL_overlap"
+  subsection_name : "10f_01_trans_eQTL_overlap_overall_signal"
+
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"), echo = F, warning = F, message = F)
+```
+
+# Power of Tests
+
+How many targets have a cis-eQTL? (What is the distribution of # of cis-eQTLs?)
+
+How many expressed genes have a trans eQTL? How many expressed genes were tested?
+
+
+# Overall Signal
+
+## Comparison of p-values
+
+```{r}
+cor(df$trans_eQTL_p_value, df$crispr_pval)
+```
+
+```{r}
+ggplot(df, aes(x = trans_eQTL_p_value, y = crispr_pval)) + 
+  geom_point() + theme_bw()
+```
+
+Subset this to only the significant CRISPR effects:
+
+```{r}
+ggplot(df %>%dplyr::filter(crispr_pval_adj < 0.1), aes(x = trans_eQTL_p_value, y = crispr_pval)) + 
+  geom_point() + theme_bw()
+```
+
+```{r}
+df4qq_plot <- df %>% 
+  mutate(status = ifelse(crispr_pval_adj < 0.1, 'crispr_sig', 'not_sig'))
+
+ggplot(df4qq_plot, 
+                         aes(sample = trans_eQTL_p_value, col = status)) + 
+  stat_qq(distribution = stats::qunif) 
+
+qq_plot_coords_sig <- ggplot(df4qq_plot %>%
+                           dplyr::filter(status == 'crispr_sig'), 
+                         aes(sample = trans_eQTL_p_value, col = status)) + 
+  stat_qq(distribution = stats::qunif) 
+
+qq_plot_coords <- ggplot_build(qq_plot_coords)$data[[1]]
+  mutate(status = 'is_pair')
+  
+eQTL_p_vals <- df %>%
+  dplyr::filter(crispr_pval_adj < 0.1) %>%
+  mutate(status = 'is_pair')
+
+background_lfcs <- df %>%
+  dplyr::filter(crispr_pval_adj > 0.1) %>%
+  mutate(status = 'not_pair')
+set.seed(0)
+background_lfcs <- background_lfcs[sample(1:dim(background_lfcs)[1], size = dim(eQTL_p_vals)[1]),]
+
+trans_eQTL_coords <- ggplot(eQTL_p_vals, aes(sample = trans_eQTL_p_value)) + 
+  stat_qq(distribution = stats::qunif)
+trans_eQTL_coords <- left_join(
+  eQTL_p_vals %>% dplyr::select(c('cis_gene_name', 'trans_gene_name', 'pval_lm' = 'trans_eQTL_p_value')),
+  ggplot_build(trans_eQTL_coords)$data[[1]] %>% dplyr::select(c('pval_lm' = "sample", "theoretical"))
+) %>%
+  mutate(status = 'crispr_sig')
+background_coords <- ggplot(background_lfcs, aes(sample = trans_eQTL_p_value)) + 
+  stat_qq(distribution = stats::qunif)
+background_coords <- left_join(
+  background_lfcs %>% dplyr::select(c('cis_gene_name', 'trans_gene_name', 'pval_lm' = 'trans_eQTL_p_value')),
+  ggplot_build(background_coords)$data[[1]] %>% dplyr::select(c('pval_lm' = "sample", "theoretical"))
+) %>%
+  mutate(status = 'not_crispr_sig')
+
+
+df4plot <- as.data.frame(bind_rows(
+  background_coords,
+ trans_eQTL_coords
+))
+
+
+ggplot(df4plot, aes(x = -log10(theoretical), y = -log10(pval_lm), col = status)) + 
+  #ggrepel::geom_text_repel(size = 3) + 
+  scale_color_manual('', values = c("crispr_sig" = target_downstream_col, 'not_crispr_sig' = 'gray')) + 
+  scale_x_log10() + scale_y_log10()+
+  xlab("Theoretical (Log10 p-value)") + ylab("Sample  (Log10 p-value)") + 
+  geom_point(size = 0.4) + geom_abline(slope = 1, lty = 3, col = 'black') + theme_bw() + theme(aspect.ratio = 1)
+
+```
+
+## Correlation of Effect Sizes
+
+```{r}
+ggplot(df, aes(x = trans_eQTL_beta, y = crispr_lfc*snp_beta)) + 
+  geom_point() + theme_bw()
+```
+
+# Per SNP
+
+## Lowest correlations
+
+```{r fig.width = 12, fig.height = 8}
+
+snps2plot <- trans_effect_info %>%
+  dplyr::filter(beta_cor < -0.15)
+plots <- lapply(snps2plot$snp_id, FUN = function(s){
+  df2plot <- df %>%
+    dplyr::filter(snp_id == s )
+  c <- cor(df2plot$trans_eQTL_beta, df2plot$crispr_lfc)
+  p <- ggplot(df2plot, aes(x = trans_eQTL_beta, y = crispr_lfc,
+                      col = ifelse(crispr_pval_adj < 0.1, 'y', 'n'),
+                      label = ifelse(trans_gene_name %in% trans_genes, trans_gene_name, ''))) + 
+    ggrepel::geom_text_repel() + 
+    scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+    ggtitle(paste0(df2plot$cis_gene_name, " - ", df2plot$snp_id)) + 
+    geom_point()+ 
+    annotate('text', label = paste0("Pearson's R = ", formatC(c, 4)), x = -Inf, y = -Inf, hjust = -0.15, vjust = -2) +
+    theme_bw() + theme(legend.position = 'none') 
+  #p
+  return(p)
+
+})
+
+ggarrange(plotlist = plots)
+
+```
+
+## Highest Correlations
+
+
+```{r fig.width = 12, fig.height = 8}
+
+snps2plot <- trans_effect_info %>%
+  slice_max(beta_cor, n = 6)
+plots <- lapply(snps2plot$snp_id, FUN = function(s){
+  df2plot <- df %>%
+    dplyr::filter(snp_id == s )
+  c <- cor(df2plot$trans_eQTL_beta, df2plot$crispr_lfc)
+  p <- ggplot(df2plot, aes(x = trans_eQTL_beta, y = crispr_lfc,
+                      col = ifelse(crispr_pval_adj < 0.1, 'y', 'n'),
+                      label = ifelse(trans_gene_name %in% trans_genes, trans_gene_name, ''))) + 
+    ggrepel::geom_text_repel() + 
+    scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+    ggtitle(paste0(df2plot$cis_gene_name, " - ", df2plot$snp_id)) + 
+    geom_point()+ 
+    annotate('text', label = paste0("Pearson's R = ", formatC(c, 4)), x = Inf, y = -Inf, hjust = 1.25, vjust = -2) +
+    theme_bw() + theme(legend.position = 'none') 
+  #p
+  return(p)
+
+})
+
+ggarrange(plotlist = plots)
+
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+

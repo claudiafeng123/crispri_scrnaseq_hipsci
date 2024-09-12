@@ -1,0 +1,348 @@
+---
+title: "Performance of Guide Assignment"
+author: "Claudia Feng"
+output: BiocStyle::html_document
+vignette: >
+    %\VignetteIndexEntry{Vignette Title}
+    %\VignetteEngine{knitr::rmarkdown}
+    %\VignetteEncoding{UTF-8}  
+---
+
+
+```{r, echo=F, message=F, warning = F}
+library(data.table)
+library(Seurat)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(Cairo)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+
+# CRISPR Marker Sequences
+
+## Correlation between Counts
+
+```{r count_correlation, fig.width = 5.5, fig.height=5, echo = F}
+
+df4correlation <- left_join(cell_metadata, crispr_counts_df,
+                            by = c("V1" = 'id'))
+df4correlation$num_umis[is.na(df4correlation$num_umis)] <- 0
+crispr_counts <- apply(select(df4correlation, all_of(crispr_sequences)), 1, sum)
+df4correlation <- df4correlation[crispr_counts > 0,]
+## correlation between sequence
+sequence_coexpression <- select(df4correlation, c("nCount_guides", all_of(crispr_sequences)))
+colnames(sequence_coexpression) <- gsub(gsub(colnames(sequence_coexpression), pattern = "_counts", replacement = ""),
+     pattern = "nCount_guides", replacement = "Guide UMIs")
+sequence_coexpression <- cor(sequence_coexpression)
+my_heatmap(sequence_coexpression, min_c = -1, max_c = 1, treeheight_row = 0, treeheight_col = 0)
+```
+
+
+## Correlation Between Activity Levels and CellRanger Counts
+
+Only done for Pica.
+
+```{r crispr_counts_vs_activity, fig.width = 10, fig.heigth = 5, echo = F}
+if (ExperimentName == "Pica"){
+  df4plot <- line_metadata
+df4plot <- left_join(df4plot, crispr_sequence_stats, by = c("cell_line" = "line"))
+df4plot <- select(df4plot, c("cell_line", "dCas9", "mScarlet", "sequence", "frac_nonzeros")) %>%
+  filter(sequence %in% c("dCas9-KRAB-MeCP2", "mScarlet"))
+
+p1 <- ggplot(df4plot %>% filter(sequence == "mScarlet"), aes(x = mScarlet, y = frac_nonzeros, label = cell_line)) + 
+  ggrepel::geom_text_repel() + 
+  ylab("Fraction of Cells with Non-zero Counts") + 
+  geom_point() + theme_bw()
+p2 <- ggplot(df4plot %>% filter(sequence == "dCas9-KRAB-MeCP2"), aes(x = dCas9, y = frac_nonzeros, label = cell_line)) + 
+  ggrepel::geom_text_repel() + 
+  ylab("") + 
+  geom_point() + theme_bw()
+ggarrange(p1, p2)
+
+}
+```
+
+
+## Counts vs. Assignment Status
+
+Only done for Pica.
+
+```{r counts_vs_status, fig.width = 15, fig.height=3, echo = F}
+if (ExperimentName == "Pica"){
+df4plot <- line_metadata
+names(df4plot)[1] <- "line"
+df4plot <- left_join(df4plot, crispr_sequence_stats)
+
+## fraction of zero counts for assigned vs. unassigned
+
+## do assigned cells have more dCas9/BSD/etc.
+df4plot <- select(df4plot, c("frac_nonzeros_assigned", "frac_nonzeros_unassigned", "line", "sequence"))
+names(df4plot) <- c("Assigned", "Unassigned", "Cell Line", "CRISPR Marker Sequence")
+df4plot <- melt(df4plot, id = c("Cell Line", "CRISPR Marker Sequence"))
+names(df4plot)[3] <- "Assignment Status"
+ggplot(df4plot, aes(x = value, y = ..scaled..,col = `Assignment Status`)) + 
+  facet_wrap(~`CRISPR Marker Sequence`, nrow = 1) + 
+  xlab("Fraction of Cells with No Counts") + ylab("") + 
+  geom_density(alpha = 0.5) + theme_bw()
+}
+```
+
+
+
+# Target Gene Downregulation
+
+## The Volcano Plot
+
+```{r volcano_plot, fig.width=6, fig.height=4, echo = F, warning = F}
+ggplot(target_df, aes(x=target_lfc, y= -log10(pval_adj))) + 
+  geom_point(size = 0.4) + theme_classic() +
+  geom_vline(xintercept = 0, lty = "dashed", col = "grey") + 
+  xlab("Target expression log-foldchange") + ylab("Significance") + #(-log10(padj))
+  guides(col="none")
+
+```
+
+## Scatter Plot with Background
+
+```{r target_lfc_scatter, fig.width=4, fig.height=4, echo = F, warning = F}
+
+df4plot <- lfcs %>%
+  dplyr::select(c("target", "downstream_gene_name", "control_norm_expr", "lfc")) %>%
+  mutate(on_target = ifelse(target == downstream_gene_name, "On-target effect", "Downstream Change"),
+         post_kd_expr = control_norm_expr + lfc)
+df4plot <- df4plot[order(df4plot$on_target),]
+ggplot(df4plot, aes(x = control_norm_expr, y = post_kd_expr, col = on_target)) + 
+  xlab("Mean Expression in Control Cells") + ylab("Post-Knockdown Expression") + 
+  scale_color_manual("", values = c("On-target effect" = "red", "Downstream Change" = "gray") ) + 
+  scale_alpha_manual("", values = c("On-target effect" = 1, "Downstream Change" = 0.4) ) + 
+  geom_point( size = 0.4) + 
+  geom_abline(slope = 1, lty = 3) + 
+  theme_bw() + theme(legend.position = 'none')
+
+```
+
+## Confidence of Assignment vs. Target Gene Expression
+
+```{r, echo = F, fig.width = 12, fig.height = 5, eval = T, echo = F, warning= F}
+
+n_bins <- 10
+cells_with_target_expr <- filter(on_target_expr, true_assignment_expr != -Inf)
+guide_umi_bins <- floor((rank(cells_with_target_expr$num_umis) - 1)*n_bins/dim(cells_with_target_expr)[1]) + 1
+#table(guide_umi_bins)
+guide_umi_cutoffs <- sort(cells_with_target_expr$num_umis)[floor(1:n_bins*length(cells_with_target_expr$V1)/n_bins)]
+
+## dCas9 vs. no dCas9
+df4plot <-cells_with_target_expr %>%
+  mutate(guide_umi_bin = guide_umi_bins) %>%
+  filter(!(is.na(true_assignment_control_mean_expr))) %>%
+  mutate(is_downregulated = ifelse(true_assignment_expr < true_assignment_control_mean_expr, "downregulated", 'not_downregulated')) %>%
+  dplyr::select(c('dCas9_expression', 'guide_umi_bin', 'is_downregulated')) %>%
+  table() %>% as.data.frame() %>%
+  reshape2::dcast(dCas9_expression + guide_umi_bin ~ is_downregulated, value.var = 'Freq') %>%
+  mutate(Freq = downregulated/(downregulated + not_downregulated))
+
+
+## fraction of cells down-regulated with random assignment
+frac_cells_downreg_rnd_assignment <- on_target_expr %>% filter(!is.infinite(random_assignment_expr) & !(is.na(random_assignment_control_mean_expr)))
+frac_downregulated_random_assignment <- length(which(frac_cells_downreg_rnd_assignment$random_assignment_expr < frac_cells_downreg_rnd_assignment$random_assignment_control_mean_expr))/dim(frac_cells_downreg_rnd_assignment)[1]
+                                                                                                    
+
+
+levels(df4plot$guide_umi_bin) <- paste0(0:(n_bins - 1)*100/n_bins, "-", 1:n_bins*100/n_bins, "%", '\n> ', guide_umi_cutoffs, ' UMIs')
+
+ggplot(df4plot, aes(x = guide_umi_bin, y = Freq, group=dCas9_expression, col = dCas9_expression)) + 
+  ylab("Fraction of Cells with Down-regulated Target") + xlab("# Guide UMIs (Percentile)") + 
+  ylim(c(min(c(df4plot$Freq, frac_downregulated_random_assignment)), 1)) + 
+  scale_color_manual("Expression of dCas9-KRAB-MeCP2", values = c("Expressed" = "darkgreen", "Not Expressed" = 'red')) + 
+  geom_line() + 
+  geom_point() +
+  geom_hline(yintercept = c(frac_downregulated_random_assignment, 1), lty = 3, col = 'black') + 
+  theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+```
+
+
+
+## Density Plots by Line
+
+Done only for Pica.
+
+```{r target_gene_downregulation_density, fig.width = 12, fig.height = 15, eval = F, echo = F}
+cell_lines <- unique(target_df$cell_line)
+plotlist <- mapply(l = cell_lines, FUN = function(l){
+  df4plot <- target_df %>%
+    mutate(to_color = ifelse(cell_line == l, l, ""))
+  p <- ggplot(df4plot, aes(x=lfc, fill = as.character(cell_line == l))) + 
+    scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "gray")) + 
+    geom_density(alpha = 0.4) + theme_classic() +
+    #facet_wrap(~ cell_line, ncol = 4) +
+    geom_vline(xintercept = 0, lty = "dashed", col = "grey") + 
+    xlab("Target expression log-foldchange") + ylab("Density")  + ggtitle(l) + #(-log10(padj))
+    guides(col="none") + theme(legend.position = 'none')
+  return(p)
+}, SIMPLIFY = F)
+ggarrange(plotlist = plotlist, ncol = 4, nrow = 5)
+```
+
+## Ranking the lines by target gene down-regulation
+
+Done only for Pica. 
+
+```{r line_ranking, fig.width = 4, fig.height = 6, eval = F, echo = F}
+split_target_df <- split.data.frame(target_df, f = target_df$target)
+split_target_df <- mapply(split_target_df, FUN = function(df){
+  #print(df$target[1])
+  r <- rank(df$lfc)
+  names(r) <- df$cell_line
+  rtn <- data.frame(target = df$target[1],
+                    cell_line = cell_lines) %>%
+    mutate(on_target_ranking  = ifelse(cell_line %in% names(r), r[cell_line], 25))
+                  
+  return(rtn)
+}, SIMPLIFY = F) %>% bind_rows() %>% as.data.frame()
+split_target_df <- split.data.frame(split_target_df, f = split_target_df$cell_line)
+mean_on_target_ranking <- lapply(split_target_df, FUN = function(df){mean(df$on_target_ranking)}) %>% unlist()
+mean_on_target_ranking <- data.frame(
+  cell_line = names(mean_on_target_ranking),
+  mean_ranking = mean_on_target_ranking
+)
+ggplot(mean_on_target_ranking, aes(x = mean_ranking, y = reorder(cell_line, mean_ranking))) + 
+  xlab('Rank of On-Target LFC') + ylab('') + 
+  geom_bar(stat = 'identity') + theme_bw()
+
+
+```
+
+
+
+
+
+Done only for Pica. Need to use target-gene LFC, as number of DEG is dependent on the number of cells.
+
+```{r predicting_line_efficacy, fig.width = 5, fig.height = 15, eval = F, echo = F}
+df4plot <- left_join(line_metadata , mean_on_target_ranking)
+
+p1 <- ggplot(df4plot, aes(x = dCas9, y = mean_ranking, label = cell_line)) + 
+  ggrepel::geom_text_repel() + 
+  xlab("dCas9 Activity") + ylab("Line Efficacy Ranking") + 
+  geom_point() + theme_bw()
+p2 <- ggplot(df4plot, aes(x = mScarlet, y = mean_ranking, label = cell_line)) + 
+  ggrepel::geom_text_repel() + 
+  xlab("mScarlet Activity") + ylab("Line Efficacy Ranking") + 
+  geom_point() + theme_bw()
+p3 <- ggplot(df4plot, aes(x = frac_cells_assigned, y = mean_ranking, label = cell_line)) + 
+  ggrepel::geom_text_repel() + 
+  xlab("Fraction of Cells Assigned") + ylab("Line Efficacy Ranking") + 
+  geom_point() + theme_bw()
+ggarrange(p1, p2, p3, ncol =1 , nrow = 3)
+
+```
+
+
+
+# Fraction of Assigned Cells
+
+## Fraction of Assigned Cells
+
+```{r fraction_of_assigned_cells_bar, fig.width = 3, fig.height = 5, eval = T, echo = F}
+df4plot <- on_target_expr %>%
+  mutate(Status = ifelse(target_gene_name == "unassigned", "Unassigned",
+                         ifelse(target_gene_name == NonTargetGeneName, "Non-targeting Control",
+                                "Perturbed")))
+
+ggplot(df4plot, aes(x = Status)) + 
+  ylab("# of Cells") + xlab('') + 
+  scale_y_log10() + 
+  geom_bar(stat = 'count') + theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+
+
+## Predicting Fraction of Assigned Cells based on UMIs
+
+```{r umis_predicting_cell_status, fig.width = 5, fig.height=5, echo = F, warning = F}
+df4glm <- left_join(cell_metadata, crispr_counts_df, by = c("V1" = "id")) 
+df4glm <- df4glm %>%
+  mutate(status = ifelse(target_gene_name == "unassigned", 0, 1)) %>%
+  dplyr::select(c("status", "nCount_guides", crispr_sequences))
+## normalize eveyrthing
+df4glm <- data.frame(
+  status = df4glm$status,
+  apply(df4glm[,-1], 2, FUN = function(x){(x - mean(x))/sd(x)})
+)
+fit <- glm(status ~ nCount_guides + BFP + BSD + dCas9.KRAB.MeCP2 + mScarlet + PURO, family=binomial(link='logit'),
+                   data = df4glm)
+df4plot <- as.data.frame(summary(fit)$coefficients)[, c(1,4)]
+names(df4plot) <- c("Coefficient", "pval")
+df4plot <- df4plot[-1,] %>% rownames_to_column("xlab_annotation")
+df4plot$padj <- p.adjust(df4plot$pval, method = "BH")
+df4plot$xlab_annotation <- gsub(df4plot$xlab_annotation, pattern = "dCas9.KRAB.MeCP2", replacement = "dCas9-KRAB-MeCP2")
+
+ggplot(df4plot, aes(x = xlab_annotation, y = Coefficient, fill = padj < 0.05)) + 
+    ylab('GLM Coefficient') + xlab('') + ggtitle('') + 
+    geom_text(aes(label=ifelse(padj<0.001,"***", ifelse(padj<0.01,"**", ifelse(padj<0.05,"*","")))), 
+              vjust=0.6 - sign(df4plot$Coefficient)/2) + 
+    scale_fill_manual(values = c("TRUE" = 'darkblue', "FALSE" = 'gray')) + 
+    geom_bar(stat="identity") + theme_bw()+ 
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), plot.margin = margin(1,1,0, 2, "cm"), legend.position = 'none')
+ 
+```
+
+## Fraction of Assigned Cells per Line
+
+Only done for Pica.
+
+```{r fraction_of_assigned_cells_per_line_bar, fig.width = 10, fig.height = 5, eval = T, echo = F}
+if (ExperimentName == "Pica"){
+  ggplot(line_metadata, aes(x = cell_line, y = frac_cells_assigned, fill = donor)) + 
+  xlab('') + ylab("Fraction of Cells Assigned") + 
+  geom_bar(stat = 'identity') + theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+}
+```
+
+## Predicting the Fraction of Cells Assigned by Line
+
+Only done for Pica.
+
+```{r predicting_frac_cell_assigned, fig.width = 10, fig.height=8, eval = F, echo = F}
+#how do we predict the crappy lines
+p1 <- ggplot(line_metadata, aes(x = dCas9, y = frac_cells_assigned,
+                          label = cell_line)) + 
+  ggrepel::geom_label_repel() + 
+  xlab("dCas9 Activity") + ylab("Fraction of Cells Assigned") + 
+  geom_point() + theme_bw()
+p2 <- ggplot(line_metadata, aes(x = mScarlet, y = frac_cells_assigned,
+                          label = cell_line)) + 
+  ggrepel::geom_label_repel() + 
+  xlab("mScarlet Expression") + ylab("Fraction of Cells Assigned") + 
+  geom_point() + theme_bw()
+p3 <- ggplot(line_metadata, aes(x = pluripotency_score, y = frac_cells_assigned,
+                          label = cell_line)) + 
+  ggrepel::geom_label_repel() + 
+  xlab("Pluripotency Score") + ylab("Fraction of Cells Assigned") + 
+  geom_point() + theme_bw()
+p4 <- ggplot(line_metadata, aes(x = novelty_score, y = frac_cells_assigned,
+                          label = cell_line)) + 
+  ggrepel::geom_label_repel() + 
+  xlab("Novelty Score") + ylab("Fraction of Cells Assigned") + 
+  geom_point() + theme_bw()
+
+#pdf(paste0(plotsdir, "/", date, "_frac_cells_assigned.pdf"), width = 10, height = 8)
+ggarrange(p1, p2, p3, p4, nrow = 2, ncol = 2)
+#dev.off()
+
+```
+
+
+# Down-regulation vs. Effect Size
+
+Done only for Pica.
+
+# Session Info
+
+Session Info

@@ -1,0 +1,116 @@
+---
+title: "How similar are the transcriptomic changes within a protein complex?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "11d_target_target_cor"
+  analysis_name : "11c_01_deconvoluting_signal_from_glm_protein_complexes"
+---
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = file.path(plotsdir, params$analysis_name, "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+
+```{r, echo = F, eval = T}
+complex_cor <- filter(target_target_cor_anno, 
+                             !(gene_1 %in% c(off_target$target_gene, off_target$off_target_gene)) & !(gene_2 %in% c(off_target$target_gene, off_target$off_target_gene)) & 
+                             gene_1 < gene_2)
+fwrite(complex_cor, paste0(outdir, "/", params$date, "_complex_cor.tsv"))
+```
+
+# Similarity Across Complexes
+
+```{r, warning=FALSE, message=FALSE, echo = F}
+df4plot <- complex_cor %>%
+  mutate(frac_common_deg = common_deg/total_deg) %>%
+  mutate(status = ifelse(is_protein_complex_pair == T, 1, 2)) %>%
+  select(c("gene_1", "gene_2", "total_deg", "common_deg", "frac_common_deg", "cor_all", "cor_all_deg", "cor_common_deg",  "status"))
+df4plot$status <- factor(df4plot$status)
+levels(df4plot$status) <- c("Common Protein Complex", "No Common Protein Complex")
+```
+
+## Correlation
+
+### All Downstream Genes
+
+```{r cor_all_genes, echo = F, fig.width = 9, fig.height = 4}
+complex_mean <- df4plot %>% filter(as.character(status) == "Common Protein Complex") %>% .$cor_all %>% mean()
+not_complex_mean <- df4plot %>% filter(as.character(status) == "No Common Protein Complex") %>% .$cor_all %>% mean()
+saveRDS(df4plot %>% dplyr::select(c('gene_1', 'gene_2', 'status', 'cor_all')), paste0(outdir, '/', date, "_cor_all_w_status.RDS"))
+ggplot(df4plot, aes(x = cor_all, fill = status)) + 
+  scale_fill_manual(" ", values = c("No Common Protein Complex" = "gray", "Common Protein Complex" = target_col)) + 
+  xlab("Correlation (All Downstream Genes)") + ylab("") + 
+  geom_density(alpha = 0.4) + theme_bw()
+```
+
+Number of Pairs considered:
+
+```{r, echo = F}
+dim(df4plot)[1]
+
+table(df4plot$status)
+```
+
+Difference in means:
+
+```{r, echo = F}
+print('t-test:')
+t.test(df4plot$cor_all[which(df4plot$status == "Common Protein Complex")], df4plot$cor_all[which(df4plot$status == "No Common Protein Complex")], alternative = "greater")$p.value
+```
+
+### DEG Only
+
+```{r cor_all_deg_genes, echo = F, fig.width = 6, fig.height = 4}
+ggplot(df4plot %>% filter(total_deg > 10), aes(x = cor_all_deg, fill = status)) + 
+  scale_fill_manual(" ", values = c("No Common Protein Complexl" = "gray", "Common Protein Complex" = target_col)) + 
+  xlab("Correlation (DEG only, > 10 Common DEG)") + ylab("Density") + 
+  geom_density(alpha = 0.4) + theme_bw()
+```
+
+Number of Pairs considered:
+
+```{r, echo = F}
+dim(df4plot %>% filter(total_deg > 10))[1]
+
+table(df4plot %>% filter(total_deg > 10) %>% .$status)
+```
+
+Difference in means:
+
+```{r, echo = F}
+t.test(df4plot  %>% filter(total_deg > 10) %>% .$cor_all[which(df4plot$status == "Common Protein Complex")], df4plot  %>% filter(total_deg > 10) %>% .$cor_all[which(df4plot$status == "No Common Protein Complex")], alternative = "greater")$p.value
+```
+
+
+## Fraction of Common DE Genes
+
+
+```{r frac_common_deg, echo = F, fig.width = 6, fig.height = 4}
+ggplot(df4plot, aes(x = frac_common_deg, fill = status)) + 
+  scale_fill_manual(" ", values = c("No Common Protein Complex" = "gray", "Common Protein Complex" = target_col)) + 
+  xlab("Fraction of Common DEG") + ylab("Density") + 
+  geom_density(alpha = 0.4) + theme_bw()
+```
+
+Number of Pairs considered:
+
+```{r, echo = F}
+dim(df4plot)[1]
+
+table(df4plot$status)
+```
+
+Difference in means:
+
+```{r, echo = F}
+t.test(df4plot$frac_common_deg[which(df4plot$status == "Common Protein Complex")], df4plot$frac_common_deg[which(df4plot$status == "No Common Protein Complex")], alternative = "greater")$p.value
+```
+
+
+

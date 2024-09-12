@@ -1,0 +1,278 @@
+---
+title: "What predicts the number of downstream genes of a target?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  utils_path: "../../io/Magpie_Utils.R"
+  io_path: "../../io/Magpie_io.R"
+  date: "2022-08-15"
+  section_name: "10b_number_of_perturbing_knockdowns"
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+
+# Top Hits
+
+
+Require pval_adj < 0.1:
+
+```{r num_targets_that_de_hist, fig.width = 8, fig.height=4, echo = F, warning = F, message = F}
+
+n_bins <- 50
+
+df4plot <- downstream_meta %>% 
+  dplyr::select(c("downstream_gene_name", "Up-regulated" = 'n_targets_that_upregulate', "Down-regulated" = 'n_targets_that_downregulate')) %>%
+  reshape2::melt(id = 'downstream_gene_name')
+top_downstream <- slice_max(downstream_meta, order_by = n_targets_that_de, n = 5)
+
+bins = as.numeric( cut(df4plot$value,n_bins))
+label_df <- downstream_meta %>% 
+  mutate(bins = as.numeric( cut(n_targets_that_de, n_bins))) %>%
+  dplyr::filter(downstream_gene_name %in% top_downstream$downstream_gene_name) %>%
+  mutate(obs_labels = paste0(downstream_gene_name, ", ", n_targets_that_de, " Perturbing Knockdowns"),
+         variable = 'Total DEG') %>%
+  group_by(values = bins, obs_labels = obs_labels, variable = variable, n_targets_that_de) %>% count
+
+
+ggplot(df4plot, aes(x = value, fill = variable)) + 
+  xlab("# of Downstream Genes") + ylab("# of Cis Effects") + 
+  #xlab("") + ylab("") + 
+  scale_fill_manual('', values = c('Up-regulated' = up_regulated_red, 'Down-regulated' = down_regulated_blue )) + 
+  scale_x_log10() + 
+  geom_histogram() + 
+  ggrepel::geom_text_repel(data = label_df, force = 1, force_pull = 1, aes(label = obs_labels, y = n, x = n_targets_that_de)) +
+  theme_bw() 
+```
+
+
+# Prediction for Top Hits
+
+## GO Enrichment
+
+```{r}
+dgs_with_effects <- filter(downstream_meta, !(is.na(n_targets_that_de))) %>% .$downstream_gene_name
+
+
+go_terms2consider <- gprofiler_annotations[which(unlist(lapply(gprofiler_annotations, FUN = function(x){length(which(x %in% dgs_with_effects))})) > 10)]
+
+enriched_go_terms <- lapply(1:length(go_terms2consider), FUN = function(i){
+  genes_in_term <- go_terms2consider[[i]]
+  genes_in_term <- genes_in_term[which(genes_in_term %in% dgs_with_effects)]
+  vec4test <- downstream_meta$n_targets_that_de; names(vec4test) <- downstream_meta$downstream_gene_name; vec4test <- vec4test[!(is.na(vec4test))]
+  rtn <- t.test(vec4test[genes_in_term], vec4test[which(!(names(vec4test) %in% genes_in_term))], alternative = "greater")$p.value
+  return(rtn)
+})
+enriched_go_terms <- data.frame(
+  id = names(go_terms2consider),
+  term = gprofiler_terms$Term[match(names(go_terms2consider), gprofiler_terms$GO_ID)],
+  ontology = gprofiler_terms$Ontology[match(names(go_terms2consider), gprofiler_terms$GO_ID)],
+  pval = unlist(enriched_go_terms)
+) %>% mutate(pval_adj = p.adjust(pval, method = "BH"))
+
+df4plot <- filter(enriched_go_terms, 
+                  !(is.na(term))) %>%
+  slice_min(pval_adj, n = 25)
+ggplot(df4plot, aes(x = -log10(pval_adj), y = reorder(term, -pval_adj))) +
+  ylab("") + xlab("-log10(p-value)") + 
+  geom_bar(stat = 'identity') + theme_bw()
+
+
+```
+
+
+## Plots of individual covariates
+
+```{r indiv_plots, warning=FALSE}
+## 
+X <- downstream_meta %>% dplyr::filter(!is.na(n_targets_that_de)) %>%
+  dplyr::mutate(in_protein_complex = ifelse(num_omnipath_protein_complexes >= 1, 1, 0),
+                ribosome_gene = ifelse(downstream_gene_name %in% gprofiler_annotations[['GO:0022626']], 1, 0),
+                stress_gene = ifelse(downstream_gene_name %in% gprofiler_annotations[['GO:0006950']], 1, 0)) %>% dplyr::select('# of Knockdowns Causing Differential Expression' = n_targets_that_de,
+                'Wild-type Expression' = mean_downstream_expr,
+                '# of Coexpressed Genes' = n_coexpressed,
+                '# of Protein Interactions' = num_omnipath_interactions,
+                '# of Protein Complexes' = in_protein_complex,
+                '# Hallmark Gene Sets' = num_msigdb_gene_sets,
+                '# of Trans Genes' = num_eQTLs_trans_gene,
+                '# of TF Targets' = num_dorothea_target,
+                'Expression Heritability' = mean_var_expl_by_donor_kilpinen,
+                'Variance of Expression' = sc_variance,
+                'Conservation Score' = Conservation,
+                '# of GO Terms' = num_go_terms,
+                'Ribosomal Gene' = ribosome_gene,
+                'Stress-response Gene' = stress_gene) %>%
+  as.matrix()
+names_var <- colnames(X)[which(!(colnames(X) %in% c("# of Knockdowns Causing Differential Expression", 'downstream_gene_name')))]
+for(nm in names_var){
+  print(qplot(X[,nm], X[, "# of Knockdowns Causing Differential Expression"]) +
+          geom_pointdensity() +
+          ggpubr::stat_cor(method = "spearman", cor.coef.name = "rho") +
+          xlab(nm) + ylab("# of Knockdowns Causing Differential Expression") + theme_bw() +
+          scale_y_log10())
+}
+```
+
+# Prediction Methods
+## Check Where there is missing data
+
+```{r}
+na_entries <- as.data.frame(bind_rows(lapply(1:dim(downstream_meta)[2], FUN = function(j){
+  return(table(c("TRUE", "FALSE", is.na(downstream_meta[,get("j")]))) - 1)
+})))
+row.names(na_entries) <- colnames(downstream_meta)
+slice_max(na_entries, order_by = `TRUE`, n = 10)
+```
+
+Remove the whole/half life stuff later because there's not enough stuff available.
+
+## Correlation matrix
+
+Should give an idea of what explains number of downstream effects and what factors to include.
+
+```{r correlation_matrix, fig.height=10, fig.width=11}
+sum(apply(is.na(X),1, function(r) sum(r))==0) # targets with all annotations
+
+cor_mat <- cor(X, method = "spearman", use = "pairwise.complete")
+my_heatmap(t(cor_mat),  min_c= -1, max_c = 1, midpoint = 0, treeheight_row = 0, treeheight_col = 0)
+
+```
+
+Variance and mean expression seem to be negatively correlated:
+
+```{r}
+ggplot(downstream_meta, aes(x = mean_downstream_expr, y = sc_variance)) + 
+  xlab("Mean Expression") + ylab("Variance of Expression") + 
+  geom_point(size = 0.4) + theme_bw()
+```
+
+```{r correlation_barplot, fig.width=8, fig.height=6}
+
+pvals_cor_test <- sapply(row.names(cor_mat),
+                         function(nm) cor.test(X[,nm], X[,"# of Knockdowns Causing Differential Expression"], method = "spearman")$p.value)
+padj <- p.adjust(pvals_cor_test, method = "BH")
+
+## the barplot
+df4plot <- data.frame(
+  Correlation = cor_mat["# of Knockdowns Causing Differential Expression", row.names(cor_mat), drop = FALSE] %>% as.vector(),
+  Name = row.names(cor_mat),
+pval_adj = padj[match(row.names(cor_mat), names(padj))]
+) %>% 
+  dplyr::filter(Name != "# of Knockdowns Causing Differential Expression")
+
+ggplot(df4plot, aes(x = reorder(Name, Correlation), y = Correlation,
+                    fill = ifelse(pval_adj < 0.05, "sig", "not sig"))) + 
+  scale_fill_manual(values = c("sig" = 'navy', 'not sig' = 'gray')) +
+  xlab("") + ylab("Correlation") + ggtitle("Predictors of Transcriptional Change due to Knockdown") + 
+  geom_text(aes(label=ifelse(pval_adj<0.001,"***", ifelse(pval_adj<0.01,"**", ifelse(pval_adj<0.05,"*","")))), 
+              vjust=0.6 - sign(df4plot$Correlation)/2) + 
+  geom_bar(stat = 'identity') + theme_bw()+ theme(legend.position = 'none',
+                                                  axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+                                                  plot.margin = margin(0.5,0.5,1,2, "cm"))
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+## Elastic net
+
+
+```{r Poisson_elastic_net, eval = F, echo = F, warning = F, fig.width = 8, fig.height=7}
+
+df4model <- downstream_meta %>% dplyr::filter(!is.na(n_targets_that_de)) %>%
+  dplyr::mutate(in_protein_complex = ifelse(num_omnipath_protein_complexes >= 1, 1, 0)) %>% #,
+                #ribosome_gene = ifelse(downstream_gene_name %in% gprofiler_annotations[['GO:0022626']], 1, 0),
+                #stress_gene = ifelse(downstream_gene_name %in% gprofiler_annotations[['GO:0006950']], 1, 0),
+                #mitochondrial_ribosome_gene = ifelse(downstream_gene_name %in% gprofiler_annotations[['GO:0005761']], 1, 0),) %>%
+  dplyr::select('# of Knockdowns Causing Differential Expression' = n_targets_that_de,
+                '# of co-expressed genes' = n_coexpressed,
+                'Wild-type expression' = mean_downstream_expr,
+                '# of protein interactions' = num_omnipath_interactions,
+                'Protein complex member' = in_protein_complex,
+                '# Hallmark gene sets' = num_msigdb_gene_sets,
+                '# of trans genes' = num_eQTLs_trans_gene,
+                '# of regulating transcription factors' = num_dorothea_source,
+                'Expression heritability' = mean_var_expl_by_donor_kilpinen,
+                'Variance of expression' = sc_variance,
+                'Conservation score' = Conservation,
+                '# of GO terms' = num_go_terms)#,
+                #'Ribosomal Gene' = ribosome_gene,
+                #'Stress-response Gene' = stress_gene,
+                #'Mitochondrial Ribosome' = mitochondrial_ribosome_gene)
+complete <- apply(df4model ,1, function(x) !any(is.na(x)))
+y <- df4model$`# of Knockdowns Causing Differential Expression`
+y <- y[complete]
+X <- model.matrix( as.formula(
+  paste0( '~ 0 + `', 
+                                     paste0(colnames(df4model %>% dplyr::select(-one_of('# of Knockdowns Causing Differential Expression'))), collapse = '` + `'),
+                                     '`')),
+             data = df4model[complete,])
+
+## just plot the raw data first
+df4plot <- na.omit(df4model)
+my_heatmap(cor(df4plot), treeheight_row = 0, treeheight_col = 0, border_col = NA)
+
+```
+
+```{r plot_elastic_net, echo = F, warning = F, message = F}
+                                    
+X <- scale(X)
+fit <- glmnet::cv.glmnet(y =y ,X, family = "poisson", alpha = 0.1)
+in_order_vars <- gsub(names(sort(coef(fit)[,1])), pattern = '`', replacement = '')
+df4plot <- melt(coef(fit), value.name = "glmnet_coef")
+row.names(df4plot) <- gsub(row.names(df4plot), pattern = '`', replacement = '')
+df4plot <- df4plot %>%
+  rownames_to_column("variable") %>% dplyr::filter(variable != "(Intercept)") %>%
+  mutate(variable = factor(variable, levels = in_order_vars))
+
+  ggplot(df4plot, aes(x= variable, y = glmnet_coef, fill = glmnet_coef <0)) +
+  geom_bar(stat = "identity") + coord_flip() +
+  theme_bw() + scale_fill_manual(values = c("TRUE" = "navy", "FALSE" = "darkred")) +
+  guides(fill = "none")
+  
+saveRDS(df4plot, paste0(outdir, '/', params$date, '_elastic_net_res.RDS'))
+
+```
+
+A more polished plot:
+
+```{r glmnet_bar_no_technical}
+glmnet_res <- readRDS(paste0(outdir, '/', params$date, '_elastic_net_res.RDS'))
+df4plot <- glmnet_res %>% 
+  dplyr::filter(variable != "(Intercept)" & variable != "# of Cells" &
+                  !(variable %in% c("# of Co-essentiality Modules")))
+
+  ggplot(df4plot, aes(x= reorder(variable, abs(glmnet_coef)), y = abs(glmnet_coef), 
+                      fill = ifelse(glmnet_coef <0, "Fewer Perturbing Knockdowns", "More Perturbing Knockdowns"))) +
+  geom_bar(stat = "identity") + coord_flip() +
+    ylab("GLM Coefficient") + xlab("") + ggtitle("Predicting the Effect Size of Knockdown") + 
+  theme_bw() + scale_fill_manual('',values = c("Fewer Perturbing Knockdowns" = 'gray', "More Perturbing Knockdowns" = downstream_col)) 
+  
+```
+
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
+

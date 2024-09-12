@@ -1,0 +1,540 @@
+---
+title: "Nonsense Mediated Decay"
+author: "Claudia Feng"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "12c_highly_correlated_downstream_genes"
+  complex_of_interest : "nmd"
+  experiment_name : "Magpie"
+---
+
+```{r, echo = F}
+HomeFolder <- params$home_folder
+ExperimentName <- params$experiment_name
+date <- params$date
+section_name <- params$section_name
+network_of_interest <- params$network_of_interest
+```
+
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = paste0(plotsdir, "/", tolower(gsub( x = params$complex_of_interest, pattern = " ", replacement = '_')), "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+ 
+# Genes Clustered Together in UMAP
+
+## UMAP
+
+```{r highlighted_umap, warning = F, echo = F, fig.width = 6, fig.height = 6 }
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        col = ifelse(umap_1 < -9.5 , "y", "n"))) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  scale_color_manual(values = c('y' = 'red', 'n' = 'gray')) + 
+  geom_point(size = 0.4) + theme_bw()  + theme(legend.position = 'none')
+
+```
+ 
+
+## Zoom In
+
+```{r zoomed_in_umap, warning = F, echo = F, fig.width = 6, fig.height = 6}
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        label = gene)) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  xlim(c(-11, -9.75)) + ylim(c(0.25,1.5)) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  geom_point() + theme_bw() 
+
+```
+
+All genes in the UMAP cluster:
+
+```{r, echo = F}
+
+genes_of_interest <- umap_coords %>%
+  dplyr::filter(umap_1 < -9.5) %>% .$gene %>% sort()
+print("Downstream genes in UMAP cluster:")
+print(genes_of_interest)
+
+```
+
+# Genes that Up/Downregulate these genes
+
+```{r, echo = F}
+targets_that_de <- magpie_lfcs_by_downstream[genes_of_interest] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  .$target %>% table()
+targets_that_de <- data.frame(
+  target = names(targets_that_de),
+  num_targets_of_interest = as.numeric(targets_that_de),
+  num_targets_total = target_meta$n_downstream_excl_target[match(names(targets_that_de), target_meta$gene)],
+  is_tf = names(targets_that_de) %in% tfs$source,
+  is_tf_target = names(targets_that_de) %in% tfs$target,
+  in_cluster = names(targets_that_de) %in% genes_of_interest
+) %>%
+  mutate(frac_targets_of_interest = num_targets_of_interest/num_targets_total) %>%
+  dplyr::filter(num_targets_total > 3 & frac_targets_of_interest > 0.5) %>% 
+  arrange(desc(frac_targets_of_interest)) %>%
+  #slice_max(frac_targets_of_interest, n = 45) %>% 
+  dplyr::select(c("target",
+                  "num_targets_of_interest",
+                  "num_targets_total", "is_tf", 'is_tf_target', 'in_cluster'))
+names(targets_that_de) <- c("Target", "Peptide Synthesis Genes Perturbed by Target", "Number of Downstream DEG", "TF", "TF Target", "In cluster")
+knitr::kable(targets_that_de)
+
+```
+
+The only TF that does reasonably well is ATF4. Check the targets of ATF4.
+
+```{r, echo = F}
+atf4_targets <- tfs[which(tfs$source == "ATF4"),] %>%
+  mutate(in_cluster = target %in% genes_of_interest)
+```
+
+What genes cause differential expression of ATF4?
+
+```{r,  echo = F}
+atf4_regulators <- magpie_lfcs_by_downstream[["ATF4"]] %>%
+  filter(pval_adj < sig_pval_thresh & target != downstream_gene_name)
+print(atf4_regulators$target)
+```
+
+Just the big knockdowns that seem to cause global change. But also...good that UPF1 is involved?
+
+# Final selection
+
+I'm thinking maybe just do everything in this cluster and see which of ATF4's targets we recover?
+
+
+```{r target_downstream_heatmap, message = F, warning = F, fig.width = 7, fig.height = 6, echo = F}
+
+genes2include <- intersect(genes_of_interest, names(magpie_lfcs_by_target))
+df4heatmap <- magpie_lfcs_by_downstream[genes2include] %>% bind_rows() %>% as.data.frame() %>%
+  filter(target %in% genes2include) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc")) %>%
+  reshape2::dcast(target ~ downstream_gene_name) %>%
+  column_to_rownames('target')
+my_heatmap(df4heatmap, midpoint = 0, treeheight_row = 0, treeheight_col = 0, border_col = NA)
+```
+
+Print genes:
+
+```{r, echo = F}
+cat(paste(genes2include, collapse = '\n'))
+```
+
+
+# Interaction with snoRNAs
+
+
+## UMAPs
+
+### Big UMAP
+
+```{r zoomed_in_umap_with_snoRNAs, warning = F, echo = F, fig.width = 6, fig.height = 6}
+
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        col = ifelse(umap_1 < -7 , "y", "n"))) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  scale_color_manual(values = c('y' = 'red', 'n' = 'gray')) + 
+  geom_point(size = 0.4) + theme_bw()  + theme(legend.position = 'none')
+
+
+```
+
+### Zoomed in Heatmap
+
+```{r zoomed_in_umap_with_snoRNAs, warning = F, echo = F, fig.width = 6, fig.height = 6}
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        label = gene)) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  xlim(c(-11, -8)) + ylim(c(0.25, 1.5)) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  geom_point() + theme_bw() 
+
+genes_of_interest <- umap_coords %>%
+  dplyr::filter(umap_2 > 0 & umap_2 < 2 & umap_1 > -12 & umap_1 < -7) %>%
+  .$gene
+genes_of_interest <- genes_of_interest[!(genes_of_interest %in% genes2exclude)]
+snoRNA_genes <- umap_coords %>%
+  dplyr::filter(umap_2 > 0 & umap_2 < 2 & umap_1 > -9 & umap_1 < -8) %>%
+  .$gene
+snoRNA_genes <- snoRNA_genes[!(snoRNA_genes %in% genes2exclude)]
+atf4_genes <- umap_coords %>%
+  dplyr::filter(umap_2 > 0 & umap_2 < 2 & umap_1 > -11 & umap_1 < -9.5) %>%
+  .$gene
+atf4_genes <- atf4_genes[!(atf4_genes %in% genes2exclude)]
+
+```
+
+## Functional Enrichment
+
+gProfiler these downstream genes.
+
+```{r}
+gprofiler_res <- gprofiler2::gost(genes_of_interest)$result
+#gprofiler_res <- gprofiler2::gost(snoRNA_genes)$result
+
+```
+
+
+
+## Heatmaps for Good Measure
+
+### Half Heatmap
+
+```{r heatmap_with_snoRNAs, fig.width = 7.25, fig.height=5.5, echo = F}
+
+downstream_genes2plot <- genes_of_interest
+df4heatmap <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+row_anno <- data.frame(
+  gene = row.names(df4heatmap)
+) %>%
+  mutate(pathway = factor(ifelse(gene %in% snoRNA_genes, 'NMD', 'ER Stress'))) %>%
+  column_to_rownames('gene')
+
+order4heatmap <- hclust(dist(df4heatmap))$order
+df4heatmap <- df4heatmap[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+my_heatmap(df4heatmap,
+           cluster_rows = F, cluster_cols = F,
+               min_c = -0.6, max_c = 0.6,
+               border_col = NA, na_col = 'white',
+               annotation_row = row_anno,
+           treeheight_row = 0, treeheight_col = 0)
+```
+
+### Comparison to iPSC co-expression
+
+```{r heatmap_vs_ipsc_coexpression, fig.width = 7.25, fig.height=5, echo = F}
+
+downstream_genes2plot <- genes_of_interest
+sc_coexpression_genes <- sc_coexpression %>%
+  dplyr::filter(gene_1 %in% downstream_genes2plot & gene_2 %in% downstream_genes2plot)
+downstream_genes2plot <- sort(unique(c(sc_coexpression_genes$gene_1, sc_coexpression_genes$gene_2)))
+
+df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+df4heatmap_sc_coexpression <- matrix(1, nrow = length(downstream_genes2plot), ncol = length(downstream_genes2plot))
+colnames(df4heatmap_sc_coexpression) <- row.names(df4heatmap_sc_coexpression) <- downstream_genes2plot
+for (i in 1:length(downstream_genes2plot)){
+  for (j in 1:i){
+    if (i != j){
+      df4heatmap_sc_coexpression[downstream_genes2plot[i],downstream_genes2plot[j]] <- df4heatmap_sc_coexpression[downstream_genes2plot[j],downstream_genes2plot[i]] <- sc_coexpression_genes %>% dplyr::filter(gene_1 == downstream_genes2plot[j] & gene_2 ==downstream_genes2plot[i]) %>% .$correlation
+    }
+    
+  }
+}
+
+
+row_anno <- data.frame(
+  gene = row.names(df4heatmap)
+) %>%
+  mutate(pathway = factor(ifelse(gene %in% snoRNA_genes, 'NMD', 'ER Stress'))) %>%
+  column_to_rownames('gene')
+
+double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_sc_coexpression,
+               min_c = -0.6, max_c = 0.6,
+               border_col = NA,
+               annotation_row = row_anno,
+           treeheight_row = 0, treeheight_col = 0)
+```
+
+### Comparison to K562 correlation
+
+```{r heatmap_vs_k562_correlation, fig.width = 7.25, fig.height=4.5, echo = F}
+downstream_genes2plot <- genes_of_interest
+K562_genes <- downstream_downstream_cor_anno %>% 
+  dplyr::filter(!(is.na(K562_gwps_cor))) %>%
+  .$downstream_gene_1 %>%
+  unique() %>% sort()
+downstream_genes2plot <- intersect(downstream_genes2plot, K562_genes)
+
+df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+df4heatmap_K562 <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+
+row_anno <- data.frame(
+  gene = row.names(df4heatmap)
+) %>%
+  mutate(pathway = factor(ifelse(gene %in% snoRNA_genes, 'NMD', 'ER Stress'))) %>%
+  column_to_rownames('gene')
+
+double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_K562,
+               min_c = -0.6, max_c = 0.6,
+               border_col = NA,
+           annotation_row = row_anno,
+          treeheight_row = 0, treeheight_col = 0)
+```
+
+
+
+
+## Targets that Regulate
+
+```{r, echo = F}
+targets_that_de <- magpie_lfcs_by_downstream[genes_of_interest] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  dplyr::select(c("target", 'downstream_gene_name', 'lfc', 'pval_adj')) %>%
+  mutate(pathway = ifelse(downstream_gene_name %in% snoRNA_genes, 'NMD', 'ER Stress')) %>%
+  group_by(target) %>%
+  summarize(
+    n_downstream = n(),
+    n_nmd_downstream = sum(pathway == "NMD"),
+    n_er_stress = sum(pathway == "ER Stress")
+  ) %>%
+  mutate(
+    num_targets_total = target_meta$n_downstream_excl_target[match(target, target_meta$gene)],
+    is_tf = target %in% tfs$source,
+    is_tf_target = target %in% tfs$target,
+    in_cluster = target %in% genes_of_interest
+  ) %>%
+  mutate(
+    frac_targets = n_downstream/num_targets_total,
+    nmd_sensitivity = n_nmd_downstream/n_downstream,
+    nmd_precision = n_nmd_downstream/length(atf4_genes),
+    er_stress_sensitivity = n_er_stress/n_downstream,
+    er_stress_precision = n_er_stress/length(snoRNA_genes)
+  ) %>%
+  mutate(
+    er_stress_regulator = (er_stress_sensitivity > 0.2 & er_stress_precision > 0.2),
+    nmd_regulator = (nmd_sensitivity > 0.2 & n_nmd_downstream > 3)
+  ) %>%
+  dplyr::filter(
+    er_stress_regulator | nmd_regulator
+  )
+to_save <- list(
+  targets_that_de = targets_that_de,
+   snoRNA_genes = snoRNA_genes,
+  atf4_genes = atf4_genes
+)
+saveRDS(to_save, paste0(outdir, '/', date, "_regulators_of_upf1.RDS"))
+```
+
+The regulating genes that stick out immediately are ATF4 and UPF1. SMG5 and CASC cause differential expression in the NMD genes, whereas EIF2B2 and 3 cause DE in the ER stress.
+
+## Networks
+
+First attempt:
+
+```{r, echo = F, fig.width = 15, fig.height = 15}
+
+genes2include <- c(genes_of_interest, "UPF1", "ATF4")
+targets2include <- intersect(genes2include, names(magpie_lfcs_by_target))
+#intersect(, intersect(names(magpie_lfcs_by_downstream), names(magpie_lfcs_by_target)))
+
+sig_effects <-  magpie_lfcs_by_target[targets2include] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter( downstream_gene_name %in% genes2include & pval_adj < sig_pval_thresh & abs(lfc) > sig_abs_lfc_thresh & target != downstream_gene_name) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc"))
+#fwrite(sig_effects, paste0(outdir, "/", tolower(gsub( x = params$complex_of_interest, pattern = " ", replacement = '_')), "/", date, "_sig_effects.tsv"), sep = '\t')
+
+g <- graph.data.frame(sig_effects)
+E(g)$color <- ifelse(sig_effects$lfc > 0, up_regulated_red, down_regulated_blue)
+plot(g, 
+     layout =  layout_nicely(g),
+     edge.size = 0.3, 
+     edge.color = E(g)$color)
+
+```
+
+There's probably too much going on here, but you can see that ATF4 and UPF1 seem to work together.
+
+Try again, add in the regulators of the snoRNAs. Also remove some of the ER stress genes (there are just too many).
+
+
+```{r second_network, echo = F, fig.width = 15, fig.height = 15}
+targets2include <- c("ATF4", "UPF1", "EIF2B2", "EIF2B3", "EIF2B3", "CASC3", "SMG5")
+downstream2include <- c(snoRNA_genes,
+                        magpie_lfcs_by_target[targets2include] %>%
+                          bind_rows() %>% as.data.frame() %>%
+                          dplyr::filter( downstream_gene_name %in% atf4_genes & pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+                          .$downstream_gene_name %>%
+                          table() %>% as.data.frame() %>%arrange(desc(Freq)) %>%
+                          dplyr::filter(Freq >= 3) %>% .$`.` %>% as.character()
+                        )
+downstream2include <- downstream2include[which(nchar(downstream2include) < 7)]
+targets2include <- intersect(c(targets2include, downstream2include), names(magpie_lfcs_by_target))
+sig_effects <-  magpie_lfcs_by_target[targets2include] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter( downstream_gene_name %in% c(downstream2include, targets2include) & pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc"))
+sig_effects$downstream_gene_name <- ifelse(sig_effects$downstream_gene_name %in% snoRNA_genes,
+                                           paste0(sig_effects$downstream_gene_name, "*"),
+                                           sig_effects$downstream_gene_name)
+
+
+g <- graph.data.frame(sig_effects)
+
+rnd_seed <- 0
+set.seed(rnd_seed)
+layout_g <- layout_nicely(g)
+layout_g[which(names(V(g)) == "UPF1"),] <- c(4,4.3)
+layout_g[which(names(V(g)) == "SMG5"),] <- c(2.7,1)
+current_layout <- as.data.frame(layout_g) %>% mutate(gene = names(V(g)))
+  
+E(g)$color <- ifelse(sig_effects$lfc > 0, up_regulated_red, down_regulated_blue)
+V(g)$node_color <- ifelse(names(V(g)) %in% c(downstream2include, paste0(downstream2include, "*")), downstream_col, target_col)
+plot(g, 
+     layout =  layout_g,
+     edge.size = 0.3, 
+     vertex.label.family="Arial", vertex.label.font=2,
+     vertex.color = adjustcolor(V(g)$node_color),
+     vertex.label.color = 'white')
+
+data4network <- list(
+  g = g,
+  layout_g = layout_g,
+  targets2include = targets2include,
+  downstream2include = downstream2include,
+  sig_effects = sig_effects,
+  rnd_seed = rnd_seed,
+  genes_of_interest = genes_of_interest,
+  snoRNA_genes = snoRNA_genes,
+  atf4_genes = atf4_genes
+)
+saveRDS(data4network, paste0(outdir, '/', tolower(gsub( x = params$complex_of_interest, pattern = " ", replacement = '_')), '/', date, '_data4network.RDS'))
+
+```
+
+I think the information going in can roughly stay the same, but the placement of points needs to change. 
+
+
+## Bicycle Genes
+
+This also will need to go through bicycle. So what should the total causal effects network look like?
+
+```{r genes4bicycle, echo = F}
+genes4bicycle <- unique(c(targets2include, downstream2include))
+genes4bicycle <- intersect(genes4bicycle, intersect(names(magpie_lfcs_by_downstream), names(magpie_lfcs_by_target)))
+cat(paste(genes4bicycle, collapse = '\n'))
+```
+
+```{r bicycle_total_causal_effects_network, echo = F, fig.width = 15, fig.height = 15}
+sig_effects <-  magpie_lfcs_by_target[genes4bicycle] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter( downstream_gene_name %in% genes4bicycle & pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc"))
+
+
+
+g <- graph.data.frame(sig_effects)
+set.seed(0)
+layout_g <- layout_nicely(g)
+E(g)$color <- ifelse(sig_effects$lfc > 0, up_regulated_red, down_regulated_blue)
+V(g)$node_color <- ifelse(names(V(g)) %in% downstream2include, downstream_col, target_col)
+plot(g, 
+     layout =  layout_g,
+     edge.size = 0.3, 
+     vertex.label.family="Arial", vertex.label.font=2,
+     vertex.color = adjustcolor(V(g)$node_color, alpha.f = 0.5),
+     )
+
+```
+
+Looks nice, but the snoRNAs die. Need to revert to the other graph.
+
+# Session info
+
+```{r session_info}
+sessionInfo()
+```
+
+
+
+```{r scratch, eval = F, echo = F}
+
+if (F){
+  layout_g <- layout_as_tree(g)
+  layout_g[,1] <- (layout_g[,1])/diff(range(layout_g[,1]))
+  layout_g[which(names(V(g)) == "UPF1"),] <- c(0,1)
+  layout_g[which(names(V(g)) == "ATF4"),] <- c(-0.5,0.75)
+  layout_g[which(names(V(g)) == "SMG5"),] <- c(0.4,0.85)
+  layout_g[which(names(V(g)) == "CASC3"),] <- c(0.7,0.75)
+  
+  layout_g[which(names(V(g)) == "EIF2B2"),] <- c(-0.15,0.33)
+  layout_g[which(names(V(g)) == "EIF2B3"),] <- c(-0.35,0.33)
+  ## snoRNAs
+  layout_g[which(names(V(g)) == "ZFAS1*"),] <- c(1,0.45)
+  layout_g[which(names(V(g)) == "SNHG32*"),] <- c(0.85,0.42)
+  layout_g[which(names(V(g)) == "SNHG8*"),] <- c(0.7,0.4)
+  layout_g[which(names(V(g)) == "GAS5*"),] <- c(0.55,0.36)
+  
+  ## mutually targeted by eif2 + nmd
+  layout_g[which(names(V(g)) == "STC2"),] <- c(-0.2,0.66)
+  layout_g[which(names(V(g)) == "IFRD1"),] <- c(0.2,0.66)
+  
+  ## targeted by ATF4
+  layout_g[which(names(V(g)) == "MTHFD2"),] <- c(-1,0.5)
+  layout_g[which(names(V(g)) == "PHGDH"),] <- c(-0.8,0.52)
+  layout_g[which(names(V(g)) == "GARS"),] <- c(-0.6,0.5)
+  layout_g[which(names(V(g)) == "SHMT2"),] <- c(-0.4,0.48)
+  
+  ## the rest
+  layout_g[which(names(V(g)) == "CARS"),] <- c(-1,0.425)
+  layout_g[which(names(V(g)) == "PCK2"),] <- c(-1,0.3)
+  layout_g[which(names(V(g)) == "CTH"),] <- c(-0.6,0.04)
+  layout_g[which(names(V(g)) == "CHAC1"),] <- c(-0.4,0.02)
+  layout_g[which(names(V(g)) == "ASS1"),] <- c(-0.5,0.08)
+  layout_g[which(names(V(g)) == "SESN2"),] <- c(-0.3,0.06)
+  layout_g[which(names(V(g)) == "PSAT1"),] <- c(0.2,0.04)
+  layout_g[which(names(V(g)) == "PSPH"),] <- c(-0.2,0.09)
+  layout_g[which(names(V(g)) == "SLC3A2"),] <- c(0.3,0.08)
+  layout_g[which(names(V(g)) == "DDIT4"),] <- c(-0.4,0.12)
+  layout_g[which(names(V(g)) == "CEBPB"),] <- c(0.4,0.10)
+
+}
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

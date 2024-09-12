@@ -1,0 +1,360 @@
+---
+title: "What is a good way to illustrate the downstream effects?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "10e_interesting_target_downstream_pairs"
+  analysis_name : "10e_01_interesting_target_downstream_pairs_plot_special_genes"
+---
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = file.path(plotsdir, params$analysis_name, "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+
+
+# Global Effects
+
+## Top Target GO Terms
+
+Looks like a hot mess because there's too much overlap in the GO terms.
+
+# Visualize some examples (targets with lots of Effect)
+
+## CTR9
+### Downstream DE Genes
+
+```{r CTR9_downstream_lfc_scatter, fig.width = 5, fig.height = 4, echo = F, message = F}
+
+tg <- "CTR9"
+
+df4plot <- lfcs %>%
+  dplyr::filter(target ==tg) %>%
+  mutate(is_de = ifelse(pval_adj < sig_pval_thresh, 'is_de', 'not_de'))
+
+
+deg <- df4plot %>% filter(is_de == 'is_de') %>% 
+  dplyr::select(c('downstream_gene_name', 'lfc', 'pval_adj'))
+genes2label <- c(tg, #the target
+                 deg %>% dplyr::filter(lfc < 0) %>% slice_min(pval_adj, n = 5) %>% .$downstream_gene_name, #down-regulated
+                deg %>% dplyr::filter(lfc > 0) %>% slice_min(pval_adj, n = 5) %>% .$downstream_gene_name # up-regualted
+                )
+
+ggplot(df4plot, aes(x = control_norm_expr, y = lfc,
+                     col = is_de, alpha = is_de,
+                    label = ifelse(downstream_gene_name %in% genes2label, downstream_gene_name, ''))) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  scale_color_manual('', values = c("is_de" = target_col, 'not_de' = 'gray')) + 
+  scale_alpha_manual('', values = c('is_de' = 0.6, 'not_de' = 0.2)) +
+  xlab("Wild-type Expression") + ylab(paste0("Expression Log-10 FC")) + ggtitle(paste0(tg, " Knockdowns")) + 
+  geom_point(size = 0.4) + 
+  theme_bw() + theme(legend.position = 'none')
+
+
+```
+
+### Enriched GO Terms
+
+```{r CTR9_go_enrichment_scatter, fig.width = 5, fig.height = 4, echo = F, message = F}
+
+tg <- "CTR9"
+df4plot <- target_go_enrichment %>%
+  dplyr::filter(target ==tg) %>%
+  mutate(is_de = ifelse(pval_adj < sig_pval_thresh, 'is_de', 'not_de')) %>%
+  dplyr::filter(go_term != "")
+
+
+deg <- df4plot %>% filter(is_de == 'is_de') %>% 
+  dplyr::select(c('go_term', 't_stat', 'pval_adj'))
+genes2label <- c(deg %>% dplyr::filter(t_stat < 0) %>% slice_min(pval_adj, n = 5) %>% .$go_term, #down-regulated
+                deg %>% dplyr::filter(t_stat > 0) %>% slice_min(pval_adj, n = 5) %>% .$go_term # up-regualted
+                )
+
+ggplot(df4plot, aes(x = t_stat, y = -log10(pval_adj),
+                     col = is_de, alpha = is_de,
+                    label = ifelse(go_term %in% genes2label, go_term, ''))) + 
+  ggrepel::geom_text_repel() + 
+  scale_color_manual('', values = c("is_de" = target_col, 'not_de' = 'gray')) + 
+  scale_alpha_manual('', values = c('is_de' = 0.6, 'not_de' = 0.2)) +
+  ylab("Significance (-log10 p-value)") + xlab(paste0("Expression Log-10 FC")) + ggtitle(paste0(tg, " Knockdowns")) + 
+  geom_point(size = 0.4) + 
+  theme_bw() + theme(legend.position = 'none')
+
+
+```
+
+## Splicing Gene
+
+### Downstream DE Genes
+
+```{r FAM32A_downstream_lfc_scatter, fig.width = 5, fig.height = 4, echo = F, message = F}
+
+tg <- "FAM32A"
+
+df4plot <- lfcs %>%
+  dplyr::filter(target ==tg) %>%
+  mutate(is_de = ifelse(pval_adj < sig_pval_thresh, 'is_de', 'not_de'))
+
+
+deg <- df4plot %>% filter(is_de == 'is_de') %>% 
+  dplyr::select(c('downstream_gene_name', 'lfc', 'pval_adj'))
+genes2label <- c(tg, #the target
+                 deg %>% dplyr::filter(lfc < 0) %>% slice_min(pval_adj, n = 5) %>% .$downstream_gene_name, #down-regulated
+                deg %>% dplyr::filter(lfc > 0) %>% slice_min(pval_adj, n = 5) %>% .$downstream_gene_name # up-regualted
+                )
+
+ggplot(df4plot, aes(x = control_norm_expr, y = lfc,
+                     col = is_de, alpha = is_de,
+                    label = ifelse(downstream_gene_name %in% genes2label, downstream_gene_name, ''))) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  scale_color_manual('', values = c("is_de" = target_col, 'not_de' = 'gray')) + 
+  scale_alpha_manual('', values = c('is_de' = 0.6, 'not_de' = 0.2)) +
+  xlab("Wild-type Expression") + ylab(paste0("Expression Log-10 FC")) + ggtitle(paste0(tg, " Knockdowns")) + 
+  geom_point(size = 0.4) + 
+  theme_bw() + theme(legend.position = 'none')
+
+
+```
+
+### Enriched GO Terms
+
+```{r FAM32A_go_enrichment_scatter, fig.width = 5, fig.height = 4, echo = F, message = F}
+
+tg <- "FAM32A"
+df4plot <- target_go_enrichment %>%
+  dplyr::filter(target ==tg) %>%
+  mutate(is_de = ifelse(pval_adj < sig_pval_thresh, 'is_de', 'not_de')) %>%
+  dplyr::filter(go_term != "")
+
+
+deg <- df4plot %>% filter(is_de == 'is_de') %>% 
+  dplyr::select(c('go_term', 't_stat', 'pval_adj'))
+genes2label <- c(deg %>% dplyr::filter(t_stat < 0) %>% slice_min(pval_adj, n = 5) %>% .$go_term, #down-regulated
+                deg %>% dplyr::filter(t_stat > 0) %>% slice_min(pval_adj, n = 5) %>% .$go_term # up-regualted
+                )
+
+ggplot(df4plot, aes(x = t_stat, y = -log10(pval_adj),
+                     col = is_de, alpha = is_de,
+                    label = ifelse(go_term %in% genes2label, go_term, ''))) + 
+  ggrepel::geom_text_repel() + 
+  scale_color_manual('', values = c("is_de" = 'red', 'not_de' = 'gray')) + 
+  scale_alpha_manual('', values = c('is_de' = 0.6, 'not_de' = 0.2)) +
+  ylab("Significance (-log10 p-value)") + xlab(paste0("Expression Log-10 FC")) + ggtitle(paste0(tg, " Knockdowns")) + 
+  geom_point(size = 0.4) + 
+  theme_bw() + theme(legend.position = 'none')
+
+
+```
+
+
+
+# Visualize Top Downstream Genes
+
+## MT-CO1
+### Targets that Cause Differential Expression
+
+```{r MT-CO1_target_de_hist, fig.width = 5, fig.height = 4, echo = F, warning = F, message = F}
+
+dg <- "MT-CO1"
+
+df4plot <- lfcs %>%
+  dplyr::filter(downstream_gene_name == dg) %>%
+  mutate(is_de = ifelse(pval_adj < sig_pval_thresh, 'is_de', 'not_de')) %>%
+  dplyr::select(c('target', 'lfc', 'pval_adj', 'is_de')) 
+
+
+deg <- df4plot %>% filter(is_de == 'is_de') %>% 
+  dplyr::select(c('target', 'lfc', 'pval_adj'))
+genes2label <- c(dg, #the target
+                 deg %>% dplyr::filter(lfc < 0) %>% slice_min(pval_adj, n = 5) %>% .$target, #down-regulated
+                deg %>% dplyr::filter(lfc > 0) %>% slice_min(pval_adj, n = 5) %>% .$target # up-regualted
+                )
+
+set.seed(0)
+df4label <- df4plot %>% dplyr::filter(target %in% genes2label) %>% arrange(-lfc)
+df4label$y_coord <- sample(200*1:dim(df4label)[1] + 500)
+df4label$x_coord <- df4label$lfc - sort(rnorm(dim(df4label)[1], mean = 0, sd = sd(df4plot$lfc)))
+
+ggplot(df4plot, aes(x = lfc)) + 
+  xlab("Expression Log-10 FC") + ylab("# of Knockdowns") + ggtitle(paste0("Change in ", dg, " Expression")) + 
+  geom_histogram(fill = downstream_col) + 
+  xlim(c(min(df4label$x_coord) - 0.2, max(df4label$x_coord) + 0.2 )) + 
+  geom_segment(data = df4label, aes(x = lfc, y = 0, xend = x_coord, yend = y_coord - 50), col = 'darkgray') + 
+  geom_text(data = df4label, aes(x = x_coord, y = y_coord), label = df4label$target, col = 'red') + 
+  theme_bw() + theme(legend.position = 'none')
+
+
+```
+
+
+
+
+## MT-ND2
+
+A gene that tends to get up-regulated
+### Targets that Cause Differential Expression
+
+```{r MT-ND2_target_de_hist, fig.width = 5, fig.height = 4, echo = F, warning = F, message = F}
+
+dg <- "MT-ND2"
+
+df4plot <- lfcs %>%
+  dplyr::filter(downstream_gene_name == dg) %>%
+  mutate(is_de = ifelse(pval_adj < sig_pval_thresh, 'is_de', 'not_de')) %>%
+  dplyr::select(c('target', 'lfc', 'pval_adj', 'is_de')) 
+
+
+deg <- df4plot %>% filter(is_de == 'is_de') %>% 
+  dplyr::select(c('target', 'lfc', 'pval_adj'))
+genes2label <- c(dg, #the target
+                 deg %>% dplyr::filter(lfc < 0) %>% slice_min(pval_adj, n = 5) %>% .$target, #down-regulated
+                deg %>% dplyr::filter(lfc > 0) %>% slice_min(pval_adj, n = 5) %>% .$target # up-regualted
+                )
+
+set.seed(0)
+df4label <- df4plot %>% dplyr::filter(target %in% genes2label) %>% arrange(-lfc)
+df4label$y_coord <- sample(200*1:dim(df4label)[1] + 500)
+df4label$x_coord <- df4label$lfc - sort(rnorm(dim(df4label)[1], mean = 0, sd = sd(df4plot$lfc)))
+
+ggplot(df4plot, aes(x = lfc)) + 
+  xlab("Expression Log-10 FC") + ylab("# of Knockdowns") + ggtitle(paste0("Change in ", dg, " Expression")) + 
+  geom_histogram(fill = downstream_col) + 
+  xlim(c(min(df4label$x_coord) - 0.2, max(df4label$x_coord) + 0.2 )) + 
+  geom_segment(data = df4label, aes(x = lfc, y = 0, xend = x_coord, yend = y_coord - 50), col = 'darkgray') + 
+  geom_text(data = df4label, aes(x = x_coord, y = y_coord), label = df4label$target, col = 'red') + 
+  theme_bw() + theme(legend.position = 'none')
+
+
+```
+
+
+
+
+## POU5F1
+
+### Downstream DE Genes
+```{r POU5F1_downstream_lfc_scatter, fig.width = 5, fig.height = 4, echo = F, warning = F, message = F}
+
+#go_enrichment_by_target <- target_go_enrichment %>%
+#  dplyr::filter(target == "POU5F1" & go_term != "")
+
+tg <- "POU5F1"
+df4plot <- lfcs %>%
+  dplyr::filter(target == "POU5F1") %>%
+  mutate(is_de = ifelse(pval_adj < sig_pval_thresh, 'is_de', 'not_de'))
+
+
+deg <- df4plot %>% filter(is_de == 'is_de') %>% 
+  dplyr::select(c('downstream_gene_name', 'lfc', 'pval_adj')) %>%
+  mutate(dev_gene = downstream_gene_name %in% gprofiler_annotations[['GO:0032502']])
+#enriched_go_terms <- gprofiler2::gost(deg$downstream_gene_name)$result
+genes2label <- c('POU5F1', #the target
+                 'TERF1',  "UTF1", 'CD24', 'FOXD3-AS1', #down-regulated
+                'ID3', 'CITED2', 'COL1A2', 'CDH2' # up-regualted
+                )
+
+ggplot(df4plot, aes(x = control_norm_expr, y = lfc,
+                     col = is_de, alpha = is_de,
+                    label = ifelse(downstream_gene_name %in% genes2label, downstream_gene_name, ''))) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  scale_color_manual('', values = c("is_de" = target_col, 'not_de' = 'gray')) + 
+  scale_alpha_manual('', values = c('is_de' = 0.6, 'not_de' = 0.2)) +
+  xlab("Wild-type Expression") + ylab(paste0("Expression Log-10 FC")) + ggtitle(paste0(tg, " Knockdowns")) + 
+  geom_point(size = 0.4) + 
+  theme_bw() + theme(legend.position = 'none')
+
+p <- ggplot(df4plot, aes(x = control_norm_expr, y = perturbed_norm_expr,
+                     col = is_de, alpha = is_de,
+                    label = downstream_gene_name)) + 
+  #ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  scale_color_manual('', values = c("is_de" = target_col, 'not_de' = 'gray')) + 
+  scale_alpha_manual('', values = c('is_de' = 0.6, 'not_de' = 0.2)) +
+  xlab("Wild-type Expression") + ylab(paste0("Log-10 FC in Expression due to ", tg, " Knockdown")) + 
+  geom_point(size = 0.4) + 
+  theme_bw() + theme(legend.position = 'none')
+
+
+```
+
+Do GO enrichment of up and down-regulated genes.
+
+```{r, echo = F}
+deg <- lfcs[[tg]] %>%
+  filter(pval_adj < sig_pval_thresh & lfc > 0) %>% 
+  dplyr::select(c('downstream_gene_name', 'lfc', 'pval_adj'))
+res <- gprofiler2::gost(deg$downstream_gene_name)$result
+fwrite(res, paste0(outdir, '/', date, "_pou5f1_increased_expression_go_terms", '.tsv'))
+deg <- lfcs[[tg]] %>%
+  filter(pval_adj < sig_pval_thresh & lfc < 0) %>% 
+  dplyr::select(c('downstream_gene_name', 'lfc', 'pval_adj'))
+res <- gprofiler2::gost(deg$downstream_gene_name)$result
+fwrite(res, paste0(outdir, '/', date, "_pou5f1_decreased_expression_go_terms", '.tsv'))
+```
+
+
+### Targets that Cause Differential Expression
+
+```{r POU5F1_target_de_hist, fig.width = 5, fig.height = 4, echo = F, warning = F, message = F}
+
+dg <- "POU5F1"
+
+df4plot <- lfcs %>%
+  dplyr::filter(downstream_gene_name == dg) %>%
+  mutate(is_de = ifelse(pval_adj < sig_pval_thresh, 'is_de', 'not_de')) %>%
+  dplyr::select(c('target', 'lfc', 'pval_adj', 'is_de')) 
+
+
+deg <- df4plot %>% filter(is_de == 'is_de') %>% 
+  dplyr::select(c('target', 'lfc', 'pval_adj'))
+genes2label <- c(dg, #the target
+                 deg %>% dplyr::filter(lfc < 0) %>% slice_min(pval_adj, n = 5) %>% .$target, #down-regulated
+                deg %>% dplyr::filter(lfc > 0) %>% slice_min(pval_adj, n = 5) %>% .$target # up-regualted
+                )
+
+set.seed(0)
+df4label <- df4plot %>%
+  dplyr::filter(target %in% genes2label) %>%
+  mutate(up_regulated = ifelse(lfc > 0, 'y', 'n')) %>%
+  group_by(up_regulated) %>%
+  summarize(target = paste0(target, collapse = '\n'),
+            lfc = mean(lfc))
+df4label$y_coord <- sample(200*1:dim(df4label)[1] + 1000)
+df4label$x_coord <- df4label$lfc + sort(rnorm(dim(df4label)[1], mean = 0.1, sd = sd(df4plot$lfc)))
+
+ggplot(df4plot, aes(x = lfc)) + 
+  xlab("Expression Log-10 FC") + ylab("# of Knockdowns") + ggtitle(paste0("Change in ", dg, " Expression")) + 
+  geom_histogram(fill = downstream_col) + 
+  xlim(c(min(df4label$x_coord) - 0.2, max(df4label$x_coord) + 0.2 )) + 
+  geom_segment(data = df4label, aes(x = lfc, y = 0, xend = x_coord, yend = y_coord - 600), col = 'darkgray') + 
+  geom_text(data = df4label, aes(x = x_coord, y = y_coord), label = df4label$target, col = 'red') + 
+  theme_bw() + theme(legend.position = 'none')
+
+
+```
+
+
+
+Do GO enrichment of up and down-regulated genes.
+
+```{r, echo = F}
+deg <- lfcs %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & lfc > 0 & downstream_gene_name == "POU5F1") %>%   dplyr::select(c('target', 'lfc', 'pval_adj'))
+res <- gprofiler2::gost(deg$target)$result
+fwrite(res, paste0(outdir, '/', date, "_go_terms_for_upregulating_pou5f1", '.tsv'))
+deg <- lfcs %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & lfc < 0 & downstream_gene_name == "POU5F1") %>%   dplyr::select(c('target', 'lfc', 'pval_adj'))
+res <- gprofiler2::gost(deg$target)$result
+fwrite(res, paste0(outdir, '/', date, "_go_terms_for_downregulating_pou5f1", '.tsv'))
+```
+
+
+# Session Info
+
+```{r, echo = F}
+sessionInfo()
+```

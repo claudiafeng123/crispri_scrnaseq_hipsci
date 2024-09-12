@@ -1,0 +1,940 @@
+---
+title: "Experiment Summary"
+author: "Claudia Feng"
+output: BiocStyle::html_document
+vignette: >
+    %\VignetteIndexEntry{Vignette Title}
+    %\VignetteEngine{knitr::rmarkdown}
+    %\VignetteEncoding{UTF-8}  
+params:
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  date : "2022-08-15"
+  section_name : "7a_experiment_summary"
+  experiment_name : "Magpie"
+---
+
+
+```{r, echo=F, message=F, warning = F}
+library(data.table)
+library(Seurat)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(Cairo)
+```
+
+
+```{r, echo=F, message=F}
+#HomeFolder <- "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+#date <- "2021-11-12"
+section_name <- params$section_name
+ExperimentName <- params$experiment_name
+HomeFolder <- params$home_folder
+date <- params$date
+min_cells_per_guide <- 5
+min_cells_per_gene <- 10
+print(date)
+```
+
+```{r, echo=F, message=F}
+source(paste0(HomeFolder, "scripts/io/", ExperimentName, "_io.R"))
+source(paste0(HomeFolder, "scripts/io/Magpie_Utils.R"))
+outdir <- file.path(OutFolder, "", section_name)
+plotsdir <- file.path(HTMLFolder, "pipeline", section_name, "/")
+if(!dir.exists(outdir)) dir.create(outdir)
+if(!dir.exists(plotsdir)) dir.create(plotsdir)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+```{r, echo=F, message=F}
+LaneMetadata <- fread(LaneMetadataPath)
+GuideMetadata <- fread(GuideMetadataPath)
+IDs <- LaneMetadata$ID
+inlet_strengths <- unique(LaneMetadata$Guide_Group)
+inlet_strengths <- unique(LaneMetadata$Guide_Strength)
+#inlet_strengths <- c("Moderate_D3", "Moderate_D6", "Strong", "Strong_D3", "Strong_D4", "Strong_D5")
+```
+
+```{r, echo=F, message=F}
+inlets_combined <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  readRDS(file.path(OutFolder, "5a_combine", paste0(date, "_", inlet_strength, "_combined.RDS")))
+})
+```
+
+```{r, echo=F, message=F}
+rtn <- list()
+```
+
+# Number of Genes
+
+Number of guides:
+
+```{r, echo=F, message=F}
+table(GuideMetadata$group)
+n_guides <- length(unique(GuideMetadata$guide_name))
+print(paste("Unique number of guides:", n_guides))
+rtn$n_guides <- n_guides
+rtn$guides_per_group <- table(GuideMetadata$group)
+```
+
+Number of genes:
+
+```{r, echo=F, message=F}
+table(GuideMetadata$group[!(duplicated(GuideMetadata$gene))])
+n_genes <- length(unique(GuideMetadata$gene))
+print(paste("Unique number of genes:", n_genes))
+rtn$n_genes <- n_genes
+rtn$genes_per_group <- table(GuideMetadata$group[!(duplicated(GuideMetadata$gene))])
+```
+
+Number of non-targeting guides:
+
+```{r, echo=F, message=F}
+length(which(GuideMetadata$group == "Control"))
+```
+
+Apparently there were 10, not 40, but the 10 were a subset of the 40 in this list.
+
+# Number of Genes Considered
+
+The `min_av_expression > 0.1` and `min_cells > 10` per guide
+Knockdowns included in the DE matrix
+
+## Genes with Expression
+
+Total number of genes with expression (genes where `min_av_expression > 0.1`):
+
+```{r}
+no_expressed_genes <- dim(inlets_combined[[1]][["RNA"]]@data)[1]
+print(paste("Number of genes considered for downstream analysis:"))
+print(no_expressed_genes)
+rtn$no_expressed_genes <- no_expressed_genes
+```
+
+
+## Knockdowns Considered
+
+```{r}
+min_cells <- 10
+num_genes_called <- list()
+for (inlet_strength in inlet_strengths){
+  eval(parse(text = paste0(
+    "num_genes_called$", inlet_strength, " <- list()"
+  )))
+  targets_called <- unique(inlets_combined[[inlet_strength]]$target_gene_name)
+  print(paste("Number of genes called from", inlet_strength, "inlets:", length(targets_called)))
+  tt <- table(inlets_combined[[inlet_strength]]$target_gene_name)
+  no_represented_genes <- length(which(tt > min_cells))
+  print(paste("Number of genes with sufficient number of cells:", no_represented_genes))
+  eval(parse(text = paste0(
+    "num_genes_called$", inlet_strength, "$targets_called <- ", "targets_called"
+  )))
+  eval(parse(text = paste0(
+    "num_genes_called$", inlet_strength, "$num_represented_genes <- ", "no_represented_genes"
+  )))
+}
+rtn$num_genes_called <- num_genes_called
+```
+
+
+
+# Number of Cells per Lane
+
+Get QC metrics for each lane. Make sure that there aren't any inlets that didn't do very well.
+
+```{r, echo=F, message=F}
+
+#pre-qc
+preqc_cellcounts <- unlist(lapply(IDs, function(ID){
+  fnm <- paste0(OutFolder, "1_RunCellRanger/", ID, "/filtered_feature_bc_matrix/barcodes.tsv.gz")
+  if (file.exists(fnm)){
+    ncells <- length(fread(fnm, header = F)$V1)
+  } else {ncells <- 0}
+})); names(preqc_cellcounts) <- IDs
+
+# vireo doublets
+vireo_doublets <- as.data.frame(bind_rows(lapply(IDs, function(ID){
+  fnm <- paste0(OutFolder, "2_Genotyping/", ID, "/summary.tsv")
+  if (file.exists(fnm)){
+    vireo_summary <- fread(paste0(OutFolder, "2_Genotyping/", ID, "/summary.tsv"))
+    no_doublets <- vireo_summary$Freq[which(vireo_summary$Var1 == "doublet")]
+    num_unassigned <- vireo_summary$Freq[which(vireo_summary$Var1 == "unassigned")]
+  } else {
+    no_doublets <- 0
+    num_unassigned <- 0
+  }
+  return(c(no_doublets = no_doublets, no_unassigned = num_unassigned))
+})))
+#post-qc
+postqc_cellcounts <- lapply(IDs, function(ID){
+  inlet_strength <- LaneMetadata$Guide_Strength[which(LaneMetadata$ID == ID)]
+  seurat_object_inlet <- subset(inlets_combined[[inlet_strength]], orig.ident == ID)
+  ncells <- length(seurat_object_inlet$orig.ident)
+  nCount_RNA <- mean(seurat_object_inlet$nCount_RNA)
+  nCount_guides <- mean(seurat_object_inlet$nCount_guides)
+  assigned_cells <- length(which(seurat_object_inlet$target_gene_name != "unassigned"))
+  nontarget_cells <- length(which(seurat_object_inlet$target_gene_name == NonTargetGeneName))
+  return(c(ncells = ncells, assigned_cells = assigned_cells, nCount_RNA = nCount_RNA, nCount_guides = nCount_guides, nontarget = nontarget_cells))
+}); postqc_cellcounts <- bind_rows(postqc_cellcounts)
+postqc_cellcounts$ID <- IDs
+cell_counts <- data.frame(ID = IDs,
+                          Guide_Group = LaneMetadata$Guide_Group,
+                          preqc = preqc_cellcounts,
+                          postqc = postqc_cellcounts$ncells,
+                          n_doublets = vireo_doublets[,1],
+                          n_vireo_unassigned=vireo_doublets[,2],
+                          assigned_cells = postqc_cellcounts$assigned_cells,
+                          nontarget_cells = postqc_cellcounts$nontarget,
+                          nCount_RNA = postqc_cellcounts$nCount_RNA,
+                          nCount_guides = postqc_cellcounts$nCount_guides)
+cell_counts$sample <- paste0(gsub(LaneMetadata$Pool[match(cell_counts$ID, LaneMetadata$ID)], pattern = "P", replacement = "Pool "), ", ", "Inlet ", LaneMetadata$Lane_Number[match(cell_counts$ID, LaneMetadata$ID)] )
+
+rtn$cells_per_inlet <- cell_counts
+
+```
+
+Assigned cells are cells with a donor and guide assignment.
+
+```{r qc_metrics_per_lane, fig.width=35, fig.height = 35, echo=F, message=F}
+df4plot <- rtn$cells_per_inlet[, c("ID", "sample", "preqc", "postqc", "assigned_cells")]
+df4plot <- melt(df4plot, id = c("ID", "sample"))
+df4plot$Pool <- unlist(lapply(strsplit(df4plot$sample, ", "), "[[", 1))
+df4plot$Inlet <- unlist(lapply(strsplit(df4plot$sample, ", "), "[[", 2))
+df4plot <- df4plot[order(df4plot$ID),]
+#pdf("scratch/2022-06-11_plots.pdf", width = 15, height = 5)
+p <- ggplot(df4plot, aes(y = value, x = variable, fill = variable)) + 
+  ggtitle(paste("Cells per Inlet")) + 
+  facet_wrap(~sample, nrow = ) + 
+  geom_bar(stat="identity", position=position_dodge()) + theme_classic() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+print(p)
+
+```
+
+
+## Number of Cells Per Donor
+
+Number of donors used:
+
+```{r, echo=F, message=F}
+donors_expected <- LaneMetadata %>% filter(ID %in% IDs) %>% .$Donors
+donors_expected <- unique(unlist(strsplit(donors_expected, ";")))
+lines_expected <- sort(gsub(donors_expected, pattern = ".*-", replacement = ""))
+
+donors_expected <- gsub(gsub(donors_expected, pattern = ".*-", replacement = ""), pattern = "_.*", replacement = "")
+paired_lines <- table(donors_expected)
+paired_lines <- names(paired_lines)[which(paired_lines > 1)]
+donors_expected <- sort(unique(donors_expected))
+print(paste("Lines used:", length(lines_expected)))
+print(lines_expected)
+print(paste("Donors expected:", length(donors_expected)))
+print(donors_expected)
+print(paste("Paired lines:", length(paired_lines)))
+print(paired_lines)
+
+rtn$donors_expected <- donors_expected
+rtn$lines_expected <- lines_expected
+```
+
+Number of donors observed:
+
+```{r cells_per_donor_per_inlet, fig.width = 25, fig.height = 5, echo=F, message=F}
+
+cells_per_donor_per_inlet <- mapply(IDs, FUN = function(ID){
+  inlet_strength <- LaneMetadata$Guide_Strength[which(LaneMetadata$ID == ID)]
+  seurat_object_inlet <- subset(inlets_combined[[inlet_strength]], orig.ident == ID)
+  donors <- seurat_object_inlet$donor
+  return(table(c(donors, donors_expected))- 1)
+})
+cells_per_donor_per_inlet <- as.data.frame(t(cells_per_donor_per_inlet))
+rtn$cells_per_donor_per_inlet <- cells_per_donor_per_inlet
+cells_per_donor_per_inlet$inlet <- row.names(cells_per_donor_per_inlet)
+cells_per_donor_per_inlet <- melt(cells_per_donor_per_inlet, id = "inlet")
+ggplot(cells_per_donor_per_inlet, aes(x = variable, y = value, fill = inlet)) + 
+  ggtitle("Cells per Donor per Inlet") + 
+  geom_bar(stat = "identity") + theme_bw()
+#ggsave(paste0(plotsdir, "cells_per_donor_per_inlet.pdf"), width = 21, height = 7)
+
+```
+
+
+```{r, echo=F, message=F}
+cells_per_donor <- as.data.frame(mapply(inlet_strengths, FUN = function(inlet_strength){
+  donors <- inlets_combined[[inlet_strength]]$donor
+  return(table(c(donors, donors_expected))- 1)
+}))
+rtn$cells_per_donor <- cells_per_donor
+#cells_per_donor$donor <- row.names(cells_per_donor)
+#cells_per_donor <- melt(cells_per_donor, id = "donor")
+#ggplot(data=cells_per_donor, aes(x=donor, y=value, fill=variable)) +
+#  geom_bar(stat="identity", position=position_dodge())
+#ggsave(paste0(plotsdir, "cells_per_donor.pdf"), width = 21, height = 7)
+```
+
+## Number of Cells Total
+
+
+Total number of cells per inlet group:
+
+```{r num_cells_total, echo=F, message=F}
+cells_per_inlet_strength <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  ncells <- dim(inlets_combined[[inlet_strength]]@meta.data)[1]
+  assigned_cells <- length(which(inlets_combined[[inlet_strength]]$target_gene_name != "unassigned"))
+  return(c(ncells = ncells, assigned_cells = assigned_cells))
+})
+cells_per_inlet_strength <- as.data.frame(t(cells_per_inlet_strength))
+cells_per_inlet_strength$inlet_strength <- inlet_strengths
+rtn$cells_per_inlet_strength <- cells_per_inlet_strength
+knitr::kable(cells_per_inlet_strength, caption = 'Number of cells, where assigned cells are cells with both a single donor and guide assignment.')
+cells_per_inlet_strength <- melt(cells_per_inlet_strength, id = "inlet_strength")
+ggplot(cells_per_inlet_strength, aes(y = value, x = inlet_strength, fill = variable)) + 
+  ggtitle(paste("Cells per Guide Group")) + 
+  geom_bar(stat="identity", position=position_dodge()) + theme_classic() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+#ggsave(paste0(plotsdir, "cells_per_inlet_strength.pdf"), width = 7, height = 7)
+```
+
+
+## Number of Cells per Gene per Donor
+
+
+```{r, echo=F, message=F}
+
+cells_per_guide_per_line <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  cell_metadata <- inlets_combined[[inlet_strength]]@meta.data %>% select(c("donor", "feature_call", "cell_line"))
+  #write table
+  cells_per_gene_per_line <- as.data.frame(t(table(cell_metadata[, c("feature_call", "cell_line")])))
+  cells_per_gene_per_line <- reshape2::dcast(cells_per_gene_per_line, feature_call ~ cell_line)
+  cells_per_gene_per_line$total <- apply(cells_per_gene_per_line[,-1], 1, sum)
+  #cells_per_gene_per_line <- cells_per_gene_per_line[which(cells_per_gene_per_line$feature_call != "unassigned"), ]
+  #hist(cells_per_gene_per_line, breaks = 50)
+  return(cells_per_gene_per_line)
+}, SIMPLIFY = F)
+rtn$cells_per_guide_per_line <- cells_per_guide_per_line
+
+cells_per_guide_per_donor <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  cell_metadata <- inlets_combined[[inlet_strength]]@meta.data %>% select(c("donor", "feature_call", "cell_line"))
+  #write table
+  cells_per_gene_per_line <- as.data.frame(t(table(cell_metadata[, c("feature_call", "donor")])))
+  cells_per_gene_per_line <- reshape2::dcast(cells_per_gene_per_line, feature_call ~ donor)
+  cells_per_gene_per_line$total <- apply(cells_per_gene_per_line[,-1], 1, sum)
+  #cells_per_gene_per_line <- cells_per_gene_per_line[which(cells_per_gene_per_line$feature_call != "unassigned"), ]
+  #hist(cells_per_gene_per_line, breaks = 50)
+  return(cells_per_gene_per_line)
+}, SIMPLIFY = F)
+rtn$cells_per_guide_per_donor <- cells_per_guide_per_donor
+
+cells_per_gene_per_line <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  cell_metadata <- inlets_combined[[inlet_strength]]@meta.data %>% select(c("donor", "target_gene_name", "cell_line"))
+  #write table
+  cells_per_gene_per_line <- as.data.frame(t(table(cell_metadata[, c("target_gene_name", "cell_line")])))
+  cells_per_gene_per_line <- reshape2::dcast(cells_per_gene_per_line, target_gene_name ~ cell_line)
+  cells_per_gene_per_line$total <- apply(cells_per_gene_per_line[,-1], 1, sum)
+  #cells_per_gene_per_line <- cells_per_gene_per_line[which(cells_per_gene_per_line$target_gene != "unassigned"), ]
+  #hist(cells_per_gene_per_line, breaks = 50)
+  return(cells_per_gene_per_line)
+}, SIMPLIFY = F)
+rtn$cells_per_gene_per_line <- cells_per_gene_per_line
+
+cells_per_gene_per_donor <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  cell_metadata <- inlets_combined[[inlet_strength]]@meta.data %>% select(c("donor", "target_gene_name", "cell_line"))
+  #write table
+  cells_per_gene_per_line <- as.data.frame(t(table(cell_metadata[, c("target_gene_name", "donor")])))
+  cells_per_gene_per_line <- reshape2::dcast(cells_per_gene_per_line, target_gene_name ~ donor)
+  cells_per_gene_per_line$total <- apply(cells_per_gene_per_line[,-1], 1, sum)
+  #cells_per_gene_per_line <- cells_per_gene_per_line[which(cells_per_gene_per_line$target_gene_name != "unassigned"), ]
+  return(cells_per_gene_per_line)
+}, SIMPLIFY = F)
+rtn$cells_per_gene_per_donor <- cells_per_gene_per_donor
+
+```
+
+
+### Number of Assigned Cells per Donor
+
+```{r, echo = F, message=F}
+cells_per_gene_per_donor <- rtn$cells_per_gene_per_donor
+unassigned_cells_per_donor <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  total_num_cells <- apply(cells_per_gene_per_donor[[inlet_strength]][,-1], 2, sum)
+  unassigned_cells <- cells_per_gene_per_donor[[inlet_strength]][which(as.character(cells_per_gene_per_donor[[inlet_strength]][,1]) == "unassigned"),-1]
+  df <- data.frame(
+    donor = names(total_num_cells),
+    inlet_strength = inlet_strength,
+    total = as.vector(t(total_num_cells)),
+    unassigned = as.vector(t(unassigned_cells)),
+    assigned = as.vector(t(total_num_cells))-as.vector(t(unassigned_cells)),
+    frac_total = 1,
+    frac_unassigned = as.vector(t(unassigned_cells))/as.vector(t(total_num_cells))
+  )
+}, SIMPLIFY = F)
+unassigned_cells_per_donor <- as.data.frame(bind_rows(unassigned_cells_per_donor))
+rtn$unassigned_cells_per_donor <-unassigned_cells_per_donor
+```
+
+```{r num_assigned_cells_per_donor, echo = F, message = F, fig.width = 6, fig.height = 6}
+df4plot <- unassigned_cells_per_donor
+df4plot <- dplyr::select(unassigned_cells_per_donor, c("donor", "inlet_strength", "assigned", "unassigned"))
+df4plot <- reshape2::melt(df4plot, id = c("donor", "inlet_strength"))
+df4plot$variable <- as.numeric(df4plot$variable)
+df4plot$variable[which(df4plot$variable == 1)] <- 0
+df4plot$variable[which(df4plot$variable == 2)] <- 1
+df4plot$variable[which(df4plot$variable == 0)] <- 2
+df4plot$variable <- factor(df4plot$variable)
+levels(df4plot$variable) <- c("unassigned", "assigned")
+df4plot <- dplyr::filter(df4plot, donor != "total")
+ggplot(df4plot, aes(y= value, x = donor, fill = variable)) + 
+  xlab("") + ylab("") + 
+  facet_wrap(~inlet_strength, nrow = 2) + 
+  geom_bar(stat="identity") + scale_fill_manual(values = list("assigned" = "darkblue", "unassigned" = "gray")) + theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+### Fraction of Assigned Cells per Donor
+
+```{r frac_assigned_cells_per_donor, echo = F, message = F, fig.width = 6, fig.height = 6}
+df4plot <- unassigned_cells_per_donor
+df4plot <- dplyr::select(unassigned_cells_per_donor, c("donor", "inlet_strength", "frac_unassigned"))
+#df4plot <- reshape2::melt(df4plot, id = c("donor", "inlet_strength"))
+ggplot(df4plot, aes(y= frac_unassigned, x = donor, fill = inlet_strength)) + 
+  facet_wrap(~inlet_strength, nrow = 2) + 
+  xlab("") + ylab("") + 
+  geom_bar(stat="identity") + scale_fill_manual(values = cols4Pools) + theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+### Number of Assigned Cells per Line
+
+
+```{r, echo = F, message=F}
+cells_per_gene_per_line <- rtn$cells_per_gene_per_line
+unassigned_cells_per_line <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  total_num_cells <- apply(cells_per_gene_per_line[[inlet_strength]][,-1], 2, sum)
+  unassigned_cells <- cells_per_gene_per_line[[inlet_strength]][which(as.character(cells_per_gene_per_line[[inlet_strength]][,1]) == "unassigned"),-1]
+  df <- data.frame(
+    cell_line = names(total_num_cells),
+    inlet_strength = inlet_strength,
+    total = as.vector(t(total_num_cells)),
+    unassigned = as.vector(t(unassigned_cells)),
+    assigned = as.vector(t(total_num_cells))-as.vector(t(unassigned_cells)),
+    frac_total = 1,
+    frac_unassigned = as.vector(t(unassigned_cells))/as.vector(t(total_num_cells))
+  )
+}, SIMPLIFY = F)
+unassigned_cells_per_line <- as.data.frame(bind_rows(unassigned_cells_per_line))
+rtn$unassigned_cells_per_line <-unassigned_cells_per_line
+```
+
+```{r num_assigned_cells_per_line, echo = F, message = F, fig.width = 6, fig.height = 8}
+#df4plot <- unassigned_cells_per_line
+df4plot <- dplyr::select(unassigned_cells_per_line, c("cell_line", "inlet_strength", "assigned", "unassigned"))
+df4plot <- reshape2::melt(df4plot, id = c("cell_line", "inlet_strength"))
+df4plot$variable <- as.numeric(df4plot$variable)
+df4plot$variable[which(df4plot$variable == 1)] <- 0
+df4plot$variable[which(df4plot$variable == 2)] <- 1
+df4plot$variable[which(df4plot$variable == 0)] <- 2
+df4plot$variable <- factor(df4plot$variable)
+levels(df4plot$variable) <- c("unassigned", "assigned")
+df4plot <- dplyr::filter(df4plot, cell_line != "total")
+df4plot$inlet_strength <- factor(df4plot$inlet_strength)
+df4plot$inlet_strength <- c("Non-Fitness Genes", "Fitness Genes")
+ggplot(df4plot, aes(y= value, x = cell_line, fill = variable)) + 
+  xlab("") + ylab("") + 
+  facet_wrap(~inlet_strength, nrow = 2) + 
+  geom_bar(stat="identity") + scale_fill_manual(values = list("assigned" = "darkblue", "unassigned" = "gray")) + theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+ 
+ Distribution:
+ 
+```{r cells_per_line_hist_all, fig.width=3.5, fig.height=4}
+ ggB2 <- ggplot(df4plot, aes(x = value, fill = variable)) +
+  geom_histogram() + theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  scale_fill_manual("Status", values = c(assigned = "navy", unassigned = "grey")) +
+  ylab("# Cell Lines") + xlab("Number of cells / line") + facet_wrap(~ inlet_strength, nrow = 2) +
+  theme(legend.position = "top") + scale_x_log10()
+ggB2
+```
+
+In case we want to 
+```{r cells_per_line_hist_assigned_only, fig.width=3.5, fig.height=4}
+ ggB2 <- ggplot(df4plot %>% filter(variable == "assigned"), aes(x = value, fill = variable)) +
+  geom_histogram(fill = "navy") + theme_classic() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  ylab("# Cell Lines") + xlab("Number of cells / line") + facet_wrap(~ inlet_strength, nrow = 2) +
+  theme(legend.position = "top") + scale_x_log10()
+ggB2
+```
+
+
+The stats:
+
+```{r, echo = F}
+
+# number of lines
+print(paste0("Number of lines with knockdowns: ", length(unique(df4plot %>% filter(variable == "assigned") %>% .$cell_line))))
+print(paste0("Number of lines with moderate knockdowns: ", length(unique(df4plot %>% filter(variable == "assigned" & inlet_strength == "Non-Fitness Genes") %>% .$cell_line))))
+print(paste0("Number of lines with strong knockdowns: ", length(unique(df4plot %>% filter(variable == "assigned" & inlet_strength == "Fitness Genes") %>% .$cell_line))))
+
+
+print(paste0("Number of lines with moderate knockdowns: "))
+summary(df4plot %>% filter(variable == "assigned" & inlet_strength == "Non-Fitness Genes") %>% .$value)
+print(paste0("Number of lines with strong knockdowns: "))
+summary(df4plot %>% filter(variable == "assigned" & inlet_strength == "Fitness Genes") %>% .$value)
+
+# total:
+cells_per_line_all <- df4plot %>% group_by(cell_line) %>% summarize(sum(value), .groups = 'drop') %>% ungroup()
+
+print(paste0("Number of lines with moderate knockdowns: "))
+quantile(cells_per_line_all$`sum(value)`)
+```
+
+
+### Fraction of Assigned Cells per Line
+
+```{r frac_assigned_cells_per_line, echo = F, message = F, fig.width = 6, fig.height = 8}
+df4plot <- unassigned_cells_per_line
+df4plot <- dplyr::select(unassigned_cells_per_line, c("cell_line", "inlet_strength", "frac_unassigned"))
+#df4plot <- reshape2::melt(df4plot, id = c("donor", "inlet_strength"))
+ggplot(df4plot, aes(y= frac_unassigned, x = cell_line, fill = inlet_strength)) + 
+  facet_wrap(~inlet_strength, nrow = 2) + 
+  xlab("") + ylab("") + 
+  geom_bar(stat="identity") + scale_fill_manual(values = cols4Pools) + theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+```{r frac_assigned_cells_per_line_hist, echo = F, message = F, fig.width = 5, fig.height = 4}
+df4plot <- unassigned_cells_per_line
+df4plot <- df4plot %>% mutate(inlet_strength = ifelse(inlet_strength == "Moderate", "Non-Fitness Genes", "Fitness Genes"))
+df4plot <- dplyr::select(df4plot, c("cell_line", "inlet_strength", "frac_unassigned"))
+#df4plot <- reshape2::melt(df4plot, id = c("donor", "inlet_strength"))
+ggplot(df4plot, aes(x= frac_unassigned, fill = inlet_strength)) + 
+  facet_wrap(~inlet_strength, nrow = 2) + 
+  xlab("") + ylab("") + 
+  geom_histogram() + scale_fill_manual("Knockdown Strength", values = cols4Pools_Renamed) + theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+### Cells per Gene per Donor
+
+```{r cells_per_gene_per_donor, echo = F, message = F}
+#plot ecdf
+
+cells_per_gene_per_donor_for_plotting <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  #print(inlet_strength)
+  df <- cells_per_gene_per_donor[[inlet_strength]]
+  df <- df[which(df[,1] != "unassigned"), ]
+  no_well_represented_donors <- apply(df[,-1], 1, FUN = function(x){length(which(x >= min_cells_per_gene))})
+  #plot(ecdf(no_well_represented_donors), 
+  #     main = inlet_strength,
+  #     xlab = "Number of Well-Represented Donors")
+  df <- as.data.frame(table(no_well_represented_donors))
+  names(df) <- c("Donors", "Number of Genes")
+  df$Genes <- mapply(df$Donors, FUN = function(ndonors){
+    paste(cells_per_gene_per_donor[[inlet_strength]]$target_gene_name[which(no_well_represented_donors == ndonors)][1:min(4, length(which(no_well_represented_donors == ndonors)))], collapse = "; ")
+  })
+  print(knitr::kable(df, caption = paste0("Number of knockdowns where a given number of donors had at least 10 cells per gene.")))
+  
+  df <- cells_per_gene_per_donor[[inlet_strength]]
+  df <- df[which(df[,1] != "unassigned"), ]
+  rtn <- data.frame(inlet_strength = inlet_strength,
+                    cells_per_gene_per_donor = as.vector(unlist(df[,-c(1, dim(df[[inlet_strength]])[2])])))
+  return(rtn)
+}, SIMPLIFY = F)
+
+cells_per_gene_per_donor_for_plotting <- as.data.frame(bind_rows(cells_per_gene_per_donor_for_plotting))
+
+ggplot(cells_per_gene_per_donor_for_plotting %>% dplyr::filter(cells_per_gene_per_donor > 0), aes(x = cells_per_gene_per_donor, fill = inlet_strength)) + 
+  xlab("Number of Cells") + ylab("Donors x Gene") + ggtitle("Cells per Gene per Donor") + 
+  scale_fill_manual(values = cols4Pools) + facet_wrap(~inlet_strength, nrow = 2) + 
+  geom_histogram(alpha = 0.5, position="identity", binwidth = 1) + theme_bw()
+
+```
+
+### Cells per Gene per Line
+
+```{r cells_per_gene_per_line, echo = F}
+#plot ecdf
+cells_per_gene_per_line <- rtn$cells_per_gene_per_line
+cells_per_gene_per_line_for_plotting <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  #print(inlet_strength)
+  df <- cells_per_gene_per_line[[inlet_strength]]
+  df <- df[which(df[,1] != "unassigned"), ]
+  no_well_represented_donors <- apply(df[,-1], 1, FUN = function(x){length(which(x >= min_cells_per_guide))})
+  #plot(ecdf(no_well_represented_donors), 
+  #     main = inlet_strength,
+  #     xlab = "Number of Well-Represented Lines")
+  df <- as.data.frame(table(no_well_represented_donors))
+  names(df) <- c("Lines", "Number of Genes")
+  df$Genes <- mapply(df$Lines, FUN = function(ndonors){
+    paste(cells_per_gene_per_line[[inlet_strength]]$target_gene[which(no_well_represented_donors == ndonors)][1:min(4, length(which(no_well_represented_donors == ndonors)))], collapse = "; ")
+  })
+  print(knitr::kable(df, caption = paste0("Number of knockdowns where a given number of line had at least 5 cells per gene.")))
+  df <- cells_per_gene_per_line[[inlet_strength]]
+  df <- df[which(df[,1] != "unassigned"), ]
+  
+  rtn <- data.frame(inlet_strength = inlet_strength,
+                    cells_per_gene_per_line = as.vector(unlist(df[,-c(1, dim(df[[inlet_strength]])[2])])))
+  return(rtn)
+}, SIMPLIFY = F)
+
+cells_per_gene_per_line_for_plotting <- as.data.frame(bind_rows(cells_per_gene_per_line_for_plotting))
+
+ggplot(cells_per_gene_per_line_for_plotting %>% dplyr::filter(cells_per_gene_per_line > 0), aes(x = cells_per_gene_per_line, fill = inlet_strength)) + 
+  scale_fill_manual(values = cols4Pools) + facet_wrap(~inlet_strength, nrow = 2) + xlab("Number of Cells") + ylab("Lines x Gene") + ggtitle("Cells per Gene per Line") + 
+  geom_histogram(alpha = 0.5, position="identity", binwidth = 1) + theme_bw()
+
+```
+
+### Cells per Guide per Donor
+
+```{r cells_per_guide_per_donor, echo = F}
+#plot ecdf
+cells_per_guide_per_donor <- rtn$cells_per_guide_per_donor
+cells_per_guide_per_donor_for_plotting <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  #print(inlet_strength)
+  df <- cells_per_guide_per_donor[[inlet_strength]]
+  df <- df[which(df[,1] != "unassigned"), ]
+  no_well_represented_donors <- apply(df[,-1], 1, FUN = function(x){length(which(x >= 5))})
+  #plot(ecdf(no_well_represented_donors), 
+  #     main = inlet_strength,
+  #     xlab = "Number of Well-Represented Lines")
+  df <- as.data.frame(table(no_well_represented_donors))
+  names(df) <- c("Donor", "Number of Guides")
+  df$Genes <- mapply(df$Donor, FUN = function(ndonors){
+    paste(cells_per_guide_per_donor[[inlet_strength]]$feature_call[which(no_well_represented_donors == ndonors)][1:min(4, length(which(no_well_represented_donors == ndonors)))], collapse = "; ")
+  })
+  df <- cells_per_gene_per_line[[inlet_strength]]
+  df <- df[which(df[,1] != "unassigned"), ]
+  rtn <- data.frame(inlet_strength = inlet_strength,
+                    cells_per_guide_per_donor = as.vector(unlist(df[,-c(1, dim(df)[2])])))
+  return(rtn)
+}, SIMPLIFY = F)
+
+cells_per_guide_per_donor_for_plotting <- as.data.frame(bind_rows(cells_per_guide_per_donor_for_plotting))
+
+ggplot(cells_per_guide_per_donor_for_plotting %>% dplyr::filter(cells_per_guide_per_donor > 0), aes(x = cells_per_guide_per_donor, fill = inlet_strength)) + 
+  scale_fill_manual(values = cols4Pools) + facet_wrap(~inlet_strength, nrow = 2) + xlab("Number of Cells") + ylab("Donor x Guide") + ggtitle("Cells per Guide per Donor") + 
+  geom_histogram(alpha = 0.5, position="identity", binwidth = 1) + theme_bw()
+
+```
+
+### Cells per Guide per Line
+
+```{r cells_per_guide_per_line, echo = F}
+#plot ecdf
+cells_per_guide_per_line <- rtn$cells_per_guide_per_line
+cells_per_guide_per_line_for_plotting <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  #print(inlet_strength)
+  df <- cells_per_guide_per_line[[inlet_strength]]
+  df <- df[which(df[,1] != "unassigned"), ]
+  no_well_represented_donors <- apply(cells_per_guide_per_line[[inlet_strength]][,-1], 1, FUN = function(x){length(which(x >= 5))})
+  #plot(ecdf(no_well_represented_donors), 
+  #     main = inlet_strength,
+  #     xlab = "Number of Well-Represented Lines")
+  df <- as.data.frame(table(no_well_represented_donors))
+  names(df) <- c("Lines", "Number of Guides")
+  df$Guides <- mapply(df$Lines, FUN = function(ndonors){
+    paste(cells_per_guide_per_line[[inlet_strength]]$feature_call[which(no_well_represented_donors == ndonors)][1:min(4, length(which(no_well_represented_donors == ndonors)))], collapse = "; ")
+  })
+  df <- cells_per_guide_per_line[[inlet_strength]]
+  df <- df[which(df[,1] != "unassigned"), ]
+  rtn <- data.frame(inlet_strength = inlet_strength,
+                    cells_per_guide_per_line = as.vector(unlist(df[,-c(1, dim(df)[2])])))
+  return(rtn)
+}, SIMPLIFY = F)
+
+cells_per_guide_per_line_for_plotting <- as.data.frame(bind_rows(cells_per_guide_per_line_for_plotting))
+
+ggplot(cells_per_guide_per_line_for_plotting %>% dplyr::filter(cells_per_guide_per_line > 0), aes(x = cells_per_guide_per_line, fill = inlet_strength)) + 
+  scale_fill_manual(values = cols4Pools) + facet_wrap(~inlet_strength, nrow = 2) + xlab("Number of Cells") + ylab("Lines x Guide") + ggtitle("Cells per Guide per Line") + 
+  geom_histogram(alpha = 0.5, position="identity", binwidth = 1) + theme_bw()
+
+```
+
+
+## Number of Cells per Gene
+
+
+```{r num_cells_per_gene, echo=F, message=F}
+
+cells_per_gene <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  df <- data.frame(target_gene = cells_per_gene_per_donor[[inlet_strength]]$target_gene_name,
+                   inlet_strength = inlet_strength,
+                   ncells = cells_per_gene_per_donor[[inlet_strength]]$total)
+  df <- dplyr::filter(df, target_gene != "unassigned")
+  print(inlet_strength)
+  total_genes <- GuideMetadata %>% filter(group == inlet_strength) %>% .$gene %>% unique() %>% length()
+  print(paste0("Number of ", inlet_strength, " knockdowns with at least 10 cells per gene: ", length(which(df$ncells >= 10)), " (", round(100*length(which(df$ncells >= 10))/total_genes, 4), "%)"  ))
+  print(paste0("Number of ", inlet_strength, " knockdowns with at least 25 cells per gene: ", length(which(df$ncells >= 25)), " (", round(100*length(which(df$ncells >= 25))/total_genes, 4), "%)" ))
+  return(df)
+}, SIMPLIFY = F)
+
+  
+
+cells_per_gene <- as.data.frame(bind_rows(cells_per_gene))
+
+####add two to these totals (doesn't include the genes with the - names)
+## total
+print("Total:")
+  total_genes <- GuideMetadata %>% .$gene %>% unique() %>% length()
+  print(paste0("Number of knockdowns with at least 10 cells per gene: ", length(which(cells_per_gene$ncells >= 10)) , " (", round(100*length(which(cells_per_gene$ncells >= 10))/total_genes, 4), "%)"  ))
+  print(paste0("Number of knockdowns with at least 25 cells per gene: ", length(which(cells_per_gene$ncells >= 25)) , " (", round(100*length(which(cells_per_gene$ncells >= 25))/total_genes, 4), "%)"  ))
+
+  
+ggplot(cells_per_gene, aes(x=ncells, fill=inlet_strength)) +
+  theme_classic() + ggtitle("Cells per Gene") + 
+  scale_fill_manual(values = cols4Pools) + facet_wrap(~inlet_strength, nrow = 2) + geom_histogram(alpha=0.5, position="identity", binwidth = 1)
+#ggsave(paste0(plotsdir, "cells_per_gene.pdf"), width = 8, height = 6)
+
+```
+
+Pretty plot:
+
+```{r cells_per_gene_hist, fig.width=3.5, fig.height=4}
+
+df4plot <- cells_per_gene %>%
+  group_by(inlet_strength) %>%
+  mutate(median = median(ncells), n_targets_total = n()) %>%
+  mutate(label = paste("Total # targets:", n_targets_total)) %>%
+  ungroup()
+
+df4plot$inlet_strength <- factor(df4plot$inlet_strength)
+levels(df4plot$inlet_strength) <- c("Non-Fitness Genes", "Fitness Genes")
+
+df_label <- select(df4plot, inlet_strength, label, median)
+df_label <- df_label[!duplicated(df_label),]
+df_label <- melt(df_label, id.vars = 'inlet_strength') %>% 
+  mutate(x = ifelse(variable == "label", 70, value),
+         y = ifelse(variable == "label", 750, 100)) %>% 
+  select(c("inlet_strength", "value", "x", "y")) 
+
+ggD <- ggplot(df4plot, aes(x = ncells, fill = inlet_strength)) +
+  geom_histogram() + scale_x_log10() +
+  facet_wrap(~ inlet_strength, ncol =1) +
+  scale_fill_manual(values = cols4Pools_Renamed) + theme_classic() +
+  guides(fill = "none") + xlab("Number of cells / target") +
+  ylab("# targets") + geom_vline(aes(xintercept = median), lty = "dashed", col = "grey") +
+  geom_text(aes(x=as.numeric(df_label$x), y = as.numeric(df_label$y), label = value, col = c(rep("black", 2), rep("gray", 2))), data = df_label) + scale_color_manual(values = c("black" = "black", "gray" = "gray")) + theme(legend.position = 'none')
+
+ggD
+```
+
+Compute mean number of cells/gene:
+
+```{r cells_per_gene, echo = F}
+cells_per_inlet_strength <- rtn$cells_per_inlet_strength
+silencer <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  assigned_cells <- cells_per_inlet_strength$assigned_cells[which(row.names(cells_per_inlet_strength) == inlet_strength)]
+  total_genes <- sum(rtn$genes_per_group[which(names(rtn$genes_per_group) %in% c("Control", unlist(lapply(strsplit(inlet_strength, "_"), "[[", 1)) ))])
+  print(paste("Average number of cells per knockdown in", inlet_strength, "genes:", assigned_cells/total_genes))
+})
+```
+
+
+
+
+## Number of Cells per Guide
+
+
+```{r cells_per_guide, echo=F, message=F}
+
+cells_per_guide <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  df <- data.frame(feature_call = cells_per_guide_per_donor[[inlet_strength]]$feature_call,
+                   inlet_strength = inlet_strength,
+                   ncells = cells_per_guide_per_donor[[inlet_strength]]$total)
+  df <- dplyr::filter(df, feature_call != "unassigned")
+  print(inlet_strength)
+  print(paste("Number of genes with at least 10 cells per guide:", length(which(df$ncells >= 10))))
+  print(paste("Number of genes with at least 25 cells per guide:", length(which(df$ncells >= 25))))
+  return(df)
+}, SIMPLIFY = F)
+cells_per_guide <- as.data.frame(bind_rows(cells_per_guide))
+
+ggplot(cells_per_guide, aes(x=ncells, fill=inlet_strength)) +
+  theme_classic() + ggtitle("Cells per Guide") + 
+  scale_fill_manual(values = cols4Pools) + facet_wrap(~inlet_strength, nrow = 2) + geom_histogram(alpha=0.5, position="identity", binwidth = 1)
+#ggsave(paste0(plotsdir, "cells_per_gene.pdf"), width = 8, height = 6)
+
+```
+
+
+Compute mean number of cells/guide:
+
+```{r, echo = F}
+cells_per_inlet_strength <- rtn$cells_per_inlet_strength
+silencer <- mapply(inlet_strengths, FUN = function(inlet_strength){
+  assigned_cells <- cells_per_inlet_strength$assigned_cells[which(row.names(cells_per_inlet_strength) == inlet_strength)]
+  total_guides <- sum(rtn$guides_per_group[which(names(rtn$genes_per_group) %in% c("Control", unlist(lapply(strsplit(inlet_strength, "_"), "[[", 1)) ))])
+  print(paste("Average number of cells per knockdown in", inlet_strength, "guides:", assigned_cells/total_guides))
+})
+```
+
+
+# QC Thresholds
+
+```{r}
+qc_thresholds <- as.data.frame(t(mapply(ID = IDs, FUN = function(ID){ readRDS(file.path(OutFolder, "3_Load_Data_QC", paste0(date, "_", ID, "_cutoffs.RDS")))
+})))
+rtn$qc_thresholds <- qc_thresholds
+```
+
+Mean cutoffs:
+
+```{r}
+print(paste0("nCount_RNA: ", median(unlist(qc_thresholds$nCount_RNA))))
+print(paste0("nFeature_RNA: ", median(unlist(qc_thresholds$nFeature_RNA))))
+```
+
+# Guide Assignment
+
+```{r cutoff_thresholds}
+cutoff_thresholds <- unlist(mapply(ID = IDs, FUN = function(ID){ fread(file.path(OutFolder, "4a_add_guides", paste0(date, "_", ID, "_th_freq.txt")))
+})); names(cutoff_thresholds) <- IDs
+
+plot(density(cutoff_thresholds), 
+     main = "Threshold for Guide Assignment", xlab = "Frequency of Top Guide", ylab = "Density")
+
+rtn$cutoff_thresholds <- cutoff_thresholds
+```
+
+Mean cutoff:
+
+```{r}
+print(median(cutoff_thresholds))
+```
+
+Minimum cutoff:
+
+```{r}
+print(min(cutoff_thresholds))
+```
+
+Maximum cutoff:
+
+```{r}
+print(max(cutoff_thresholds))
+```
+
+# Vireo Summary
+
+```{r}
+
+vireo_summary <- as.data.frame(t(mapply(ID = IDs, FUN = function(ID){
+  #print(ID)
+  fnm <- file.path(OutFolder, "2_Genotyping", ID, "summary.tsv")
+  if (file.exists(fnm)){
+    summary <- fread(fnm)
+    return(c("total" = sum(summary$Freq),
+    "singlet" = sum(summary %>% filter(!(Var1 %in% c("doublet", "unassigned"))) %>% .$Freq), 
+    "doublet" = summary %>% filter(Var1 == "doublet") %>% .$Freq,
+    "unassigned" = summary %>% filter(Var1 == "unassigned") %>% .$Freq))
+  } else {
+    return(c(total = 0, singlet = 0, doublet=0, unassigned = 0))
+  }
+  
+})))
+
+rtn$vireo_summary <- vireo_summary
+
+```
+
+Doublet assignment stats:
+
+```{r}
+
+total_cells <- apply(vireo_summary %>% filter(unassigned != 0), 2, sum)
+print(total_cells)
+print(paste("% of cells marked as doublet:", total_cells["doublet"]/total_cells["total"]*100))
+print(paste("% of cells marked as unassigned:", total_cells["unassigned"]/total_cells["total"]*100))
+print(paste("% of cells marked as singlet:", total_cells["singlet"]/total_cells["total"]*100))
+
+```
+
+# Tables
+
+## Cells Per Inlet
+```{r, echo = F}
+df <- rtn$cells_per_inlet
+colnames(df) <- c("ID", "Group", "Pre-QC", "Post-QC", "Doublets", "Assigned", "NT", "nUMI", "nGuides", "Sample")
+row.names(df) <- NULL
+knitr::kable(
+  df, caption = 'QC statistics for each inlet.'
+)
+```
+
+## Cells per Donor per Inlet
+
+```{r, echo = F}
+cells_per_donor_per_inlet <- rtn$cells_per_donor_per_inlet
+knitr::kable(cells_per_donor_per_inlet, caption = 'Cells per donor for each inlet.')
+```
+
+
+## Cells per Gene per Donor
+
+```{r, echo = F}
+for (inlet_strength in inlet_strengths){
+  no_well_represented_donors <- apply(cells_per_gene_per_donor[[inlet_strength]][,-1], 1, FUN = function(x){length(which(x >= 10))})
+  df <- as.data.frame(table(no_well_represented_donors))
+  names(df) <- c("Donors", "Number of Genes")
+  df$Genes <- mapply(df$Donors, FUN = function(ndonors){
+    paste(cells_per_gene_per_donor[[inlet_strength]]$target_gene[which(no_well_represented_donors == ndonors)][1:min(4, length(which(no_well_represented_donors == ndonors)))], collapse = ";")
+  })
+  assign(paste0("df_", inlet_strength), df)
+}
+knitr::kable(df_Moderate, caption = paste("Number of Moderate_D6 knockdowns where a given number of donors had at least 10 cells per gene."))
+knitr::kable(df_Strong, caption = paste("Number of Strong_D3 knockdowns where a given number of donors had at least 10 cells per gene."))
+#knitr::kable(df_Strong_D5, caption = paste("Number of Strong_D5 knockdowns where a given number of donors had at least 10 cells per gene."))
+```
+
+## QC Cutoffs
+
+```{r, echo = F}
+for (inlet_strength in inlet_strengths){
+  no_well_represented_donors <- apply(cells_per_gene_per_donor[[inlet_strength]][,-1], 1, FUN = function(x){length(which(x >= 10))})
+  df <- as.data.frame(table(no_well_represented_donors))
+  names(df) <- c("Donors", "Number of Genes")
+  df$Genes <- mapply(df$Donors, FUN = function(ndonors){
+    paste(cells_per_gene_per_donor[[inlet_strength]]$target_gene[which(no_well_represented_donors == ndonors)][1:min(4, length(which(no_well_represented_donors == ndonors)))], collapse = ";")
+  })
+  assign(paste0("df_", inlet_strength), df)
+}
+knitr::kable(df_Moderate, caption = paste("Number of Moderate knockdowns where a given number of donors had at least 10 cells per gene."))
+knitr::kable(df_Strong, caption = paste("Number of Strong knockdowns where a given number of donors had at least 10 cells per gene."))
+
+```
+
+
+## Guide Assignment Threshold
+
+```{r}
+df <- data.frame(ID = names(rtn$cutoff_thresholds),
+                    Cutoff = as.numeric(rtn$cutoff_thresholds))
+knitr::kable(df, caption = paste("Minimum frequency of top guide required for guide assignment."))
+```
+
+
+## Donor Assignments
+
+```{r}
+df <- rtn$vireo_summary
+knitr::kable(df, caption = paste("Vireo summary."))
+```
+
+## QC Cutoffs
+
+```{r}
+df <- rtn$qc_thresholds
+knitr::kable(df, caption = paste("QC thresholds for each inlet."))
+```
+
+
+# Save File
+
+Save to: 
+
+```{r, echo = F}
+print(paste0(OutFolder, section_name, "/", section_name, "_", date, ".RDS"))
+```
+
+```{r, echo=F, message=F}
+saveRDS(rtn, file = paste0(OutFolder, section_name, "/", section_name, "_", date, ".RDS"))
+```

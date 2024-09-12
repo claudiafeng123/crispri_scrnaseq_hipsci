@@ -1,0 +1,324 @@
+---
+title: "Experiment Summary"
+author: "Claudia Feng"
+output: BiocStyle::html_document
+vignette: >
+    %\VignetteIndexEntry{Vignette Title}
+    %\VignetteEngine{knitr::rmarkdown}
+    %\VignetteEncoding{UTF-8}  
+---
+
+
+```{r, echo=F, message=F, warning = F}
+library(data.table)
+library(Seurat)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(Cairo)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+# dCas9 and mScarlet Activity
+
+## Wet Lab Tests
+
+```{r wet_lab_mscarlet_dcas9_levels, fig.width = 10, fig.height = 5}
+df4plot <- line_metadata %>% filter(!is.na(dCas9))
+df4plot$dCas9 <- as.numeric(df4plot$dCas9)
+ggplot(df4plot, aes(x = cell_line, y = dCas9, fill = donor)) + 
+  xlab('') + ylab('') + ggtitle("dCas9 Activity") + 
+  geom_bar(stat = 'identity') + theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+df4plot$mScarlet <- as.numeric(df4plot$mScarlet)
+ggplot(df4plot, aes(x = cell_line, y = mScarlet, fill = donor)) + 
+  xlab('') + ylab('') + ggtitle("mScarlet Activity") + 
+  geom_bar(stat = 'identity') + theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggplot(line_metadata, aes(x = cell_line, y = pluripotency_score, fill = donor)) + 
+  xlab('') + ylab('') + ggtitle("Pluripotency Score") + 
+  geom_bar(stat = 'identity') + theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggplot(line_metadata, aes(x = cell_line, y = novelty_score, fill = donor)) + 
+  xlab('') + ylab('') + ggtitle("Novelty Score") + 
+  geom_bar(stat = 'identity') + theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+```
+
+## Counts from CellRanger
+
+```{r mscarlet_dcas9_counts, fig.width = 10, fig.height = 5}
+df4plot <- line_metadata
+df4plot <- left_join(df4plot, crispr_sequence_stats, by = c("cell_line" = "line"))
+df4plot <- select(df4plot, c("cell_line", "dCas9", "mScarlet", "sequence", "frac_nonzeros")) %>%
+  filter(sequence %in% c("dCas9-KRAB-MeCP2", "mScarlet")) %>%
+  mutate(donor = unlist(lapply(strsplit(cell_line, "_"), "[[", 1)))
+
+ggplot(df4plot %>% filter(sequence == "mScarlet"), aes(x = cell_line, y = frac_nonzeros, fill = donor)) + 
+  ylab("Fraction of Cells with Non-zero Counts") + xlab('') + ggtitle("mScarlet") + 
+  geom_bar(stat = 'identity') + theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggplot(df4plot %>% filter(sequence == "dCas9-KRAB-MeCP2"), aes(x = cell_line, y = frac_nonzeros, fill = donor)) + 
+  ylab("Fraction of Cells with Non-zero Counts") + xlab('') + ggtitle("dCas9-KRAB-MeCP2") + 
+  geom_bar(stat = 'identity') + theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+## Correlation Between Activity Levels and CellRanger Counts
+
+```{r crispr_counts_vs_activity, fig.width = 10, fig.heigth = 5}
+df4plot <- line_metadata
+df4plot <- left_join(df4plot, crispr_sequence_stats, by = c("cell_line" = "line"))
+df4plot <- select(df4plot, c("cell_line", "dCas9", "mScarlet", "sequence", "frac_nonzeros")) %>%
+  filter(sequence %in% c("dCas9-KRAB-MeCP2", "mScarlet"))
+
+p1 <- ggplot(df4plot %>% filter(sequence == "mScarlet"), aes(x = mScarlet, y = frac_nonzeros, label = cell_line)) + 
+  ggrepel::geom_text_repel() + 
+  ylab("Fraction of Cells with Non-zero Counts") + 
+  geom_point() + theme_bw()
+p2 <- ggplot(df4plot %>% filter(sequence == "dCas9-KRAB-MeCP2"), aes(x = dCas9, y = frac_nonzeros, label = cell_line)) + 
+  ggrepel::geom_text_repel() + 
+  ylab("") + 
+  geom_point() + theme_bw()
+ggarrange(p1, p2)
+```
+
+## Correlation between Counts
+
+```{r count_correlation, fig.width = 5.5, fig.height=5}
+df4correlation <- select(cell_metadata, c("V1", "nCount_guides", "num_umis", "cell_line", contains("_counts")))
+df4correlation$num_umis[is.na(df4correlation$num_umis)] <- 0
+crispr_counts <- apply(select(df4correlation, contains("_counts")), 1, sum)
+df4correlation <- df4correlation[crispr_counts > 0,]
+## correlation between sequence
+sequence_coexpression <- select(df4correlation, c("num_umis", contains("_counts")))
+colnames(sequence_coexpression) <- gsub(gsub(colnames(sequence_coexpression), pattern = "_counts", replacement = ""),
+     pattern = "num_umis", replacement = "Guide Counts")
+sequence_coexpression <- cor(sequence_coexpression)
+my_heatmap(sequence_coexpression, min_c = -1, max_c = 1)
+```
+
+## Counts vs. Assignment Status
+
+```{r counts_vs_status, fig.width = 15, fig.height=3}
+df4plot <- line_metadata
+names(df4plot)[1] <- "line"
+df4plot <- left_join(df4plot, crispr_sequence_stats)
+
+## fraction of zero counts for assigned vs. unassigned
+
+## do assigned cells have more dCas9/BSD/etc.
+df4plot <- select(df4plot, c("frac_nonzeros_assigned", "frac_nonzeros_unassigned", "line", "sequence"))
+names(df4plot) <- c("Assigned", "Unassigned", "Cell Line", "CRISPR Marker Sequence")
+df4plot <- melt(df4plot, id = c("Cell Line", "CRISPR Marker Sequence"))
+names(df4plot)[3] <- "Assignment Status"
+ggplot(df4plot, aes(x = value, y = ..scaled..,col = `Assignment Status`)) + 
+  facet_wrap(~`CRISPR Marker Sequence`, nrow = 1) + 
+  xlab("Fraction of Cells with No Counts") + ylab("") + 
+  geom_density(alpha = 0.5) + theme_bw()
+```
+
+# Fraction of Assigned Cells
+
+```{r fraction_of_assigned_cells_bar, fig.width = 10, fig.height = 5}
+ggplot(line_metadata, aes(x = cell_line, y = frac_cells_assigned, fill = donor)) + 
+  xlab('') + ylab("Fraction of Cells Assigned") + 
+  geom_bar(stat = 'identity') + theme_bw() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+## Predicting the Fraction of Cells Assigned
+
+```{r predicting_frac_cell_assigned, fig.width = 10, fig.height=8}
+#how do we predict the crappy lines
+p1 <- ggplot(line_metadata, aes(x = dCas9, y = frac_cells_assigned,
+                          label = cell_line)) + 
+  ggrepel::geom_label_repel() + 
+  xlab("dCas9 Activity") + ylab("Fraction of Cells Assigned") + 
+  geom_point() + theme_bw()
+p2 <- ggplot(line_metadata, aes(x = mScarlet, y = frac_cells_assigned,
+                          label = cell_line)) + 
+  ggrepel::geom_label_repel() + 
+  xlab("mScarlet Expression") + ylab("Fraction of Cells Assigned") + 
+  geom_point() + theme_bw()
+p3 <- ggplot(line_metadata, aes(x = pluripotency_score, y = frac_cells_assigned,
+                          label = cell_line)) + 
+  ggrepel::geom_label_repel() + 
+  xlab("Pluripotency Score") + ylab("Fraction of Cells Assigned") + 
+  geom_point() + theme_bw()
+p4 <- ggplot(line_metadata, aes(x = novelty_score, y = frac_cells_assigned,
+                          label = cell_line)) + 
+  ggrepel::geom_label_repel() + 
+  xlab("Novelty Score") + ylab("Fraction of Cells Assigned") + 
+  geom_point() + theme_bw()
+
+#pdf(paste0(plotsdir, "/", date, "_frac_cells_assigned.pdf"), width = 10, height = 8)
+ggarrange(p1, p2, p3, p4, nrow = 2, ncol = 2)
+#dev.off()
+
+```
+
+# Down-regulation of Target Gene
+
+## Volcano Plots
+
+```{r target_gene_downregulation_volcano, fig.width = 18, fig.height=7.5}
+df4plot <- target_df %>%
+  filter(cell_line != "zapk_3") %>%
+  mutate(donor = unlist(lapply(strsplit(cell_line, "_"), "[[", 1)))
+ggplot(df4plot, aes(x=lfc, y= -log10(pval_adj), col = donor)) + geom_point() + theme_classic() +
+  facet_wrap(~ cell_line, ncol = 6) +
+  geom_vline(xintercept = 0, lty = "dashed", col = "grey") + 
+  xlab("Target expression log-foldchange") + ylab("significance") + #(-log10(padj))
+  guides(col="none")
+```
+
+## Density Plots by Line
+
+```{r target_gene_downregulation_density, fig.width = 12, fig.height = 15}
+cell_lines <- unique(target_df$cell_line)
+plotlist <- mapply(l = cell_lines, FUN = function(l){
+  df4plot <- target_df %>%
+    mutate(to_color = ifelse(cell_line == l, l, ""))
+  p <- ggplot(df4plot, aes(x=lfc, fill = as.character(cell_line == l))) + 
+    scale_fill_manual(values = c("TRUE" = "red", "FALSE" = "gray")) + 
+    geom_density(alpha = 0.4) + theme_classic() +
+    #facet_wrap(~ cell_line, ncol = 4) +
+    geom_vline(xintercept = 0, lty = "dashed", col = "grey") + 
+    xlab("Target expression log-foldchange") + ylab("Density")  + ggtitle(l) + #(-log10(padj))
+    guides(col="none") + theme(legend.position = 'none')
+  return(p)
+}, SIMPLIFY = F)
+ggarrange(plotlist = plotlist, ncol = 4, nrow = 5)
+```
+
+## Ranking the lines by target gene down-regulation
+
+```{r line_ranking, fig.width = 4, fig.height = 6}
+split_target_df <- split.data.frame(target_df, f = target_df$target)
+split_target_df <- mapply(split_target_df, FUN = function(df){
+  #print(df$target[1])
+  r <- rank(df$lfc)
+  names(r) <- df$cell_line
+  rtn <- data.frame(target = df$target[1],
+                    cell_line = cell_lines) %>%
+    mutate(on_target_ranking  = ifelse(cell_line %in% names(r), r[cell_line], 25))
+                  
+  return(rtn)
+}, SIMPLIFY = F) %>% bind_rows() %>% as.data.frame()
+split_target_df <- split.data.frame(split_target_df, f = split_target_df$cell_line)
+mean_on_target_ranking <- lapply(split_target_df, FUN = function(df){mean(df$on_target_ranking)}) %>% unlist()
+mean_on_target_ranking <- data.frame(
+  cell_line = names(mean_on_target_ranking),
+  mean_ranking = mean_on_target_ranking
+)
+ggplot(mean_on_target_ranking, aes(x = mean_ranking, y = reorder(cell_line, mean_ranking))) + 
+  xlab('Rank of On-Target LFC') + ylab('') + 
+  geom_bar(stat = 'identity') + theme_bw()
+
+
+```
+
+## Target Gene Down-regulation vs. dCas9/mScarlet
+
+```{r crispr_sequence_vs_target_downregulation, fig.width = 14, height = 9}
+df4plot <- left_join(select(target_df, c("target", "cell_line", "lfc")),
+                     select(line_metadata, c("cell_line", "dCas9_level", "mScarlet_level", "pluripotency_level", "novelty_level")))
+df4plot$dCas9_level <- ifelse(df4plot$dCas9_level == "high", 3, ifelse(df4plot$dCas9_level == "moderate", 2, 1))
+df4plot$dCas9_level <- factor(df4plot$dCas9_level)
+levels(df4plot$dCas9_level) <- c("Low", "Moderate", "High")
+df4plot$mScarlet_level <- ifelse(df4plot$mScarlet_level == "high", 3, ifelse(df4plot$mScarlet_level == "moderate", 2, 1))
+df4plot$mScarlet_level <- factor(df4plot$mScarlet_level)
+levels(df4plot$mScarlet_level) <- c("Low", "Moderate", "High")
+df4plot$pluripotency_level <- ifelse(df4plot$pluripotency_level == "high", 3, ifelse(df4plot$pluripotency_level == "moderate", 2, 1))
+df4plot$pluripotency_level <- factor(df4plot$pluripotency_level)
+levels(df4plot$pluripotency_level) <- c("Low", "Moderate", "High")
+df4plot$novelty_level <- ifelse(df4plot$novelty_level == "high", 3, ifelse(df4plot$novelty_level == "moderate", 2, 1))
+df4plot$novelty_level <- factor(df4plot$novelty_level)
+levels(df4plot$novelty_level) <- c("Low", "High")
+
+p1 <- ggplot(df4plot %>%  filter(!is.na(dCas9_level)), aes(x = lfc, col = dCas9_level)) + 
+  #facet_wrap(~ dCas9_level, ncol = 1) + 
+  xlab('LFC of Target Gene') + ylab('') + ggtitle('Strength of Target Down-regulation vs. dCas9 Activity') + 
+  geom_density() + theme_bw()
+p2 <- ggplot(df4plot %>%  filter(!is.na(mScarlet_level)), aes(x = lfc, col = mScarlet_level)) + 
+  #facet_wrap(~ dCas9_level, ncol = 1) + 
+  xlab('LFC of Target Gene') + ylab('') + ggtitle('Strength of Target Down-regulation vs. mScarlet Expression') + 
+  geom_density() + theme_bw()
+p3 <- ggplot(df4plot , aes(x = lfc, col = pluripotency_level)) + 
+  #facet_wrap(~ dCas9_level, ncol = 1) + 
+  xlab('LFC of Target Gene') + ylab('') + ggtitle('Strength of Target Down-regulation vs. Pluripotency Score') + 
+  geom_density() + theme_bw()
+p4 <- ggplot(df4plot , aes(x = lfc, col = novelty_level)) + 
+  #facet_wrap(~ dCas9_level, ncol = 1) + 
+  xlab('LFC of Target Gene') + ylab('') + ggtitle('Strength of Target Down-regulation vs. Novelty Score') + 
+  geom_density() + theme_bw()
+ggarrange(p1, p2, p3, p4, nrow = 2, ncol = 2)
+
+
+## do a t-test
+#dCas9 activity
+dCas9_pval <- t.test(df4plot$lfc[which(df4plot$dCas9_level != "low")], df4plot$lfc[which(df4plot$dCas9_level == "Low")], 
+       alternative = "less")
+print(paste0("dCas9 p-value: ", dCas9_pval$p.value))
+mScarlet_pval <- t.test(df4plot$lfc[which(df4plot$mScarlet_level != "low")], df4plot$lfc[which(df4plot$mScarlet_level == "Low")], 
+                     alternative = "less")
+print(paste0("mScarlet p-value: ", mScarlet_pval$p.value))
+pluripotency_pval <- t.test(df4plot$lfc[which(df4plot$pluripotency_level != "low")], df4plot$lfc[which(df4plot$pluripotency_level == "Low")], 
+                        alternative = "less")
+print(paste0("Pluripotency p-value: ", pluripotency_pval$p.value))
+novelty_pval <- t.test(df4plot$lfc[which(df4plot$novelty_level != "low")], df4plot$lfc[which(df4plot$novelty_level == "Low")], 
+                            alternative = "less")
+print(paste0("Novelty p-value: ", novelty_pval$p.value))
+
+```
+
+
+
+# Predicting Effectiveness of a Knockdown by Line
+
+Need to use target-gene LFC, as number of DEG is dependent on the number of cells.
+
+```{r predicting_line_efficacy, fig.width = 5, fig.height = 15}
+df4plot <- left_join(line_metadata , mean_on_target_ranking)
+
+p1 <- ggplot(df4plot, aes(x = dCas9, y = mean_ranking, label = cell_line)) + 
+  ggrepel::geom_text_repel() + 
+  xlab("dCas9 Activity") + ylab("Line Efficacy Ranking") + 
+  geom_point() + theme_bw()
+p2 <- ggplot(df4plot, aes(x = mScarlet, y = mean_ranking, label = cell_line)) + 
+  ggrepel::geom_text_repel() + 
+  xlab("mScarlet Activity") + ylab("Line Efficacy Ranking") + 
+  geom_point() + theme_bw()
+p3 <- ggplot(df4plot, aes(x = frac_cells_assigned, y = mean_ranking, label = cell_line)) + 
+  ggrepel::geom_text_repel() + 
+  xlab("Fraction of Cells Assigned") + ylab("Line Efficacy Ranking") + 
+  geom_point() + theme_bw()
+ggarrange(p1, p2, p3, ncol =1 , nrow = 3)
+
+```
+
+One more
+
+```{r, fig.width = 6.5, fig.height = 6}
+target_efficacy_summary <- target_df %>%
+  group_by(cell_line) %>%
+  summarize(n_lots_of_deg = length(which(n_deg >= 20)),
+            n_successful_crispr = length(which(pval_adj < 0.1))) %>%
+  mutate(Donor = unlist(lapply(strsplit(cell_line, "_"), "[[", 1)))
+            
+df4plot <- left_join(line_metadata ,
+                     target_efficacy_summary)
+ggplot(target_efficacy_summary, aes(x = n_successful_crispr, y = n_lots_of_deg, 
+                                    label = cell_line, col = donor)) + 
+  xlab("# of Significantly Down-regulated Targets") + ylab("# of Downstream DE Genes") + 
+  ggrepel::geom_text_repel() + 
+  geom_point() + theme_bw()
+```
+
+
+
+# Save File
+
+Files saved in data preprocessing step, prior to creating .html file.
+
+# Session Info
+
+Session Info done af

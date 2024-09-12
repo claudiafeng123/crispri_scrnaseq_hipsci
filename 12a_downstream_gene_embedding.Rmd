@@ -1,0 +1,866 @@
+---
+title: "What structure beween targets is visible based on similarity of perturbation effects?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  io_path: "Magpie_io.R"
+  date: "2022-08-15"
+  section_name: "12a_downstream_gene_embedding"
+  experiment_name : "Magpie"
+  min_cells : 10
+  min_target : 1
+  min_deg: 1
+---
+# Preparations
+```{r prep, warning=FALSE, message=FALSE}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+print(params)
+```
+
+# Check for Signal
+
+## Just iPSC Data
+
+```{r downstream_downstream_heatmap, fig.width = 40, fig.height = 35, echo = F, message =F, warning = F}
+downstream_genes2plot <- downstream_downstream_cor_anno %>%
+  dplyr::filter(abs(iPSC_cor) > sig_cor_thresh_downstream & downstream_gene_1 != downstream_gene_2) %>% 
+  .$downstream_gene_1 %>%
+  table() %>% as.data.frame() %>%
+  dplyr::filter(Freq > 1) %>% .$`.` %>% as.character()
+downstream_genes_with_signal <- downstream_meta %>%
+  dplyr::filter(n_targets_that_de > 1) %>% .$downstream_gene_name
+downstream_genes2plot <- intersect(downstream_genes2plot, downstream_genes_with_signal)
+
+df4heatmap <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+my_heatmap(df4heatmap, min_c = -0.6, max_c = 0.6,
+           treeheight_row = 0, treeheight_col = 0)
+```
+
+## Comparison to Single-cell Co-expression
+
+```{r iPSC_sc_coexpression_double_heatmap, fig.width = 40, fig.height = 35, echo = F, message =F, warning = F}
+
+downstream_genes2plot <- downstream_downstream_cor_anno %>%
+  dplyr::filter(abs(iPSC_cor) > 0.25 & downstream_gene_1 != downstream_gene_2) %>% 
+  .$downstream_gene_1 %>%
+  table() %>% as.data.frame() %>%
+  dplyr::filter(Freq > 1) %>% .$`.` %>% as.character()
+sc_coexpression_genes <- sc_coexpression %>%
+  dplyr::filter(gene_1 %in% downstream_genes2plot & gene_2 %in% downstream_genes2plot)
+downstream_genes2plot <- sort(unique(c(sc_coexpression_genes$gene_1, sc_coexpression_genes$gene_2)))
+
+df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+df4heatmap_sc_coexpression <- matrix(1, nrow = length(downstream_genes2plot), ncol = length(downstream_genes2plot))
+colnames(df4heatmap_sc_coexpression) <- row.names(df4heatmap_sc_coexpression) <- downstream_genes2plot
+for (i in 1:length(downstream_genes2plot)){
+  for (j in 1:i){
+    if (i != j){
+      df4heatmap_sc_coexpression[downstream_genes2plot[i],downstream_genes2plot[j]] <- df4heatmap_sc_coexpression[downstream_genes2plot[j],downstream_genes2plot[i]] <- sc_coexpression_genes %>% dplyr::filter(gene_1 == downstream_genes2plot[j] & gene_2 ==downstream_genes2plot[i]) %>% .$correlation
+    }
+    
+  }
+}
+
+double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_sc_coexpression,
+               min_c = -0.6, max_c = 0.6,
+           treeheight_row = 0, treeheight_col = 0)
+```
+
+
+
+## Comparison to Genome-wide K562 Screen
+
+Compare to Replogle data.
+
+```{r iPSC_K562_double_heatmap, fig.width = 40, fig.height = 35, echo = F, message =F, warning = F}
+downstream_genes2plot <- downstream_downstream_cor_anno %>%
+  dplyr::filter(abs(iPSC_cor) > 0.25 & downstream_gene_1 != downstream_gene_2) %>% 
+  .$downstream_gene_1 %>%
+  table() %>% as.data.frame() %>%
+  dplyr::filter(Freq > 1) %>% .$`.` %>% as.character()
+K562_genes <- downstream_downstream_cor_anno %>% 
+  dplyr::filter(!(is.na(K562_gwps_cor))) %>%
+  .$downstream_gene_1 %>%
+  unique() %>% sort()
+downstream_genes2plot <- intersect(downstream_genes2plot, K562_genes)
+
+df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+df4heatmap_K562 <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_K562,
+               min_c = -0.6, max_c = 0.6,
+           treeheight_row = 0, treeheight_col = 0)
+```
+The genes that are expressed in our data, but not in K562 cells:
+
+```{r iPSC_downstream_heatmap_not_in_K562, fig.width = 10, fig.height = 7, echo = F, message =F, warning = F}
+
+downstream_genes2plot <- downstream_downstream_cor_anno %>%
+  dplyr::filter(abs(iPSC_cor) > 0.25 & downstream_gene_1 != downstream_gene_2) %>% 
+  .$downstream_gene_1 %>%
+  table() %>% as.data.frame() %>%
+  dplyr::filter(Freq > 1) %>% .$`.` %>% as.character()
+K562_genes <- downstream_downstream_cor_anno %>% 
+  dplyr::filter(!(is.na(K562_gwps_cor))) %>%
+  .$downstream_gene_1 %>%
+  unique() %>% sort()
+downstream_genes2plot <- downstream_genes2plot[which(!(downstream_genes2plot %in% K562_genes))]
+
+df4heatmap <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+row_anno <- data.frame(
+  gene = colnames(df4heatmap),
+  jerber_log2FC = jerber_de_eff_deg$coef[match(colnames(df4heatmap), jerber_de_eff_deg$hgnc_symbol)]
+) %>%
+  mutate(jerber_log2FC = ifelse(is.na(jerber_log2FC), 'Neither', ifelse(jerber_log2FC < 0, 'Team UTF1', 'Not Team UTF1'))) %>%
+  column_to_rownames('gene')
+
+my_heatmap(df4heatmap, min_c = -0.6, max_c = 0.6,
+           border_col = NA,
+           treeheight_row = 0, treeheight_col = 0, 
+           annotation_row = row_anno)
+```
+
+
+# New Co-expression Modules?
+
+Get list of new co-perturbed pairs:
+
+```{r new_coperturbations, fig.width = 60, fig.height = 55, echo = F, message =F, warning = F}
+
+## maybe just do this by hand 
+new_coperturbed_pairs <- downstream_downstream_cor_anno %>%
+  dplyr::filter(abs(iPSC_cor) > sig_cor_thresh_downstream & 
+                  (abs(K562_gwps_cor) < insig_cor_thresh_target | is.na(K562_gwps_cor)) & downstream_gene_1 > downstream_gene_2) 
+
+
+downstream_genes2plot <- sort(unique(c(new_coperturbed_pairs$downstream_gene_1,
+                                   new_coperturbed_pairs$downstream_gene_2))) 
+
+
+df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+df4heatmap_K562 <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_K562,
+               min_c = -0.6, max_c = 0.6,
+           treeheight_row = 0, treeheight_col = 0)
+
+```
+
+Obviously, there's a lot of junk here. Manually subset to the genes that we're interested in.
+
+
+# Downstream Gene Embedding
+## Pick Downstream Genes to Include
+
+```{r, echo = F}
+
+th <- 0.2; clust_size <- 2
+
+downstream_genes2include <- downstream_downstream_cor_anno %>%
+  dplyr::filter(abs(iPSC_cor) > th & downstream_gene_1 != downstream_gene_2) %>% 
+  .$downstream_gene_1 %>%
+  table() %>% as.data.frame() %>%
+  dplyr::filter(Freq >= clust_size) %>%
+  .$`.` %>% as.character() %>% unique() %>% sort()
+
+print(paste0("Downstream genes with at least ", clust_size, " correlates > ", th, ":"))
+print(length(downstream_genes2include))
+
+```
+
+Can I impose a minimum of targets that down-regulate?
+
+```{r, fig.width=7, fig.height = 6, echo =F}
+df4plot <- left_join(downstream_downstream_cor_anno %>%
+  dplyr::filter(abs(iPSC_cor) > sig_cor_thresh_downstream & downstream_gene_1 != downstream_gene_2) %>%
+  .$downstream_gene_1 %>%
+  table() %>% as.data.frame(),
+  downstream_meta %>%
+    dplyr::select(c("downstream_gene_name", "n_targets_that_de")),
+  by = c("." = "downstream_gene_name"))
+p <- ggplot(df4plot, aes(x = Freq, y = n_targets_that_de)) + 
+  ylab("# of Targets that DE") + xlab("# of High Correlates") + 
+  geom_point(size = 0.4) + theme_bw()
+ggMarginal(p, type = 'histogram', binwidth = 1)
+
+min_de_target <- 1
+downstream_genes_with_signal <- downstream_meta %>%
+  dplyr::filter(n_targets_that_de >= min_de_target) %>% .$downstream_gene_name
+downstream_genes2include  <- intersect(downstream_genes2include , downstream_genes_with_signal)
+print(paste0("Downstream genes with at least ", min_de_target, " target causing DE:"))
+print(length(downstream_genes2include))
+
+```
+
+Get rid of anything that might've been an off-target
+
+```{r, fig.width=7, fig.height = 6, echo = F}
+downstream_genes2include  <- downstream_genes2include[which(!(downstream_genes2include %in% genes2exclude))]
+print(paste0("Downstream genes without off-target effects:"))
+print(length(downstream_genes2include))
+
+```
+
+## Pick Targets to Include
+
+Also include only targets that DE
+
+```{r, echo = F}
+
+targets_that_de <- magpie_res %>%
+  dplyr::filter(pval_adj < sig_pval_thresh) %>%
+  .$target %>% unique() %>% sort()
+
+```
+
+## Final Numbers
+
+Number of targets + downstream genes:
+
+```{r, echo = F}
+print("Number of downstream DEGs:")
+length(downstream_genes2include)
+print("Number of targets considered:")
+length(targets_that_de)
+```
+
+
+## Save
+
+```{r, echo =F }
+
+downstream_correlation <- list()
+downstream_correlation$targets4heatmap <- targets_that_de
+downstream_correlation$downstream4heatmap <- downstream_genes2include
+downstream_correlation$df4heatmap <- magpie_res %>%
+  dplyr::filter(target %in% targets_that_de & downstream_gene_name %in% downstream_genes2include) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'lfc')) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target') %>%
+  as.matrix() %>% cor()
+
+print(paste0('writing to: ', paste0(outdir, '/', date, "_downstream_correlation.RDS")))
+saveRDS(downstream_correlation, paste0(outdir, '/', date, "_downstream_correlation.RDS"))
+
+```
+
+# Heatmap
+
+I like heatmaps because it seems more...real?
+```{r, echo = F, fig.width = 30, fig.height = 26}
+
+
+df4heatmap <- readRDS(paste0(outdir, '/', date, "_downstream_correlation.RDS"))
+order4heatmap <- colnames(df4heatmap)[hclust(dist(df4heatmap))$order]
+
+my_heatmap(df4heatmap[order4heatmap, order4heatmap], 
+           cluster_rows = F, cluster_cols = F,
+           min_c = -0.8, max_c = 0.8,
+           border_col = NA,
+           treeheight_row = 0, treeheight_col = 0)
+
+```
+
+Do some hierarchical clustering to see what sort of functional enrichment we have.
+
+## Cluster
+### Find optimal number of clusters
+
+```{r optimal_n_clusters, fig.width = 15, fig.height = 4, echo = F}
+hclust_res <- hclust(dist(df4heatmap))
+hclust_order4heatmap <- colnames(df4heatmap)[hclust_res$order]
+fviz_nbclust(df4heatmap , FUN = hcut, method = "silhouette", k.max = 50)
+```
+
+Start by sorting into two clusters:
+
+```{r heatmap_two_clusters, fig.height=30, fig.width=32, echo = F, warning = F, message = F}
+opt_clusters <- 2
+downstream_anno <- cutree(hclust_res, k = opt_clusters) %>% as.data.frame() %>%
+  rownames_to_column('gene')
+names(downstream_anno) <- c('gene', 'cluster')
+downstream_anno <- split.data.frame(downstream_anno, f = downstream_anno$cluster)
+downstream_anno <- as.data.frame(bind_rows(lapply(downstream_anno, FUN = function(df){
+  df$order_in_cluster <- match(df$gene, hclust_order4heatmap[which(hclust_order4heatmap %in% df$gene)])
+  return(df)
+})))
+row_anno <- downstream_anno %>% dplyr::select('gene', 'cluster') %>% column_to_rownames('gene')
+row_anno$cluster <- factor(row_anno$cluster)
+p <- my_heatmap(df4heatmap[order4heatmap, order4heatmap],
+                treeheight_row = 0, treeheight_col = 0,
+                min_c = -0.8, max_c = 0.8,
+                cluster_rows = F, cluster_cols = F,
+                annotation_row = row_anno)
+
+```
+
+One of the clusters seems to be the cytosolic ribosome and everything else is in the other cluster.
+
+
+### Subcluster
+
+```{r subcluster_clu2, fig.width = 15, fig.height = 4, echo = F}
+
+clu0 <- downstream_anno %>% 
+  dplyr::filter(cluster == 2)
+df4heatmap_clu0 <- df4heatmap[clu0$gene, clu0$gene]
+hclust_res_clu0 <- hclust(dist(df4heatmap_clu0))
+hclust_order4heatmap_clu0 <- colnames(df4heatmap_clu0)[hclust_res_clu0$order]
+fviz_nbclust(df4heatmap_clu0 , FUN = hcut, method = "silhouette", k.max = 50)
+```
+
+
+```{r subcluster_heatmap, fig.height=15, fig.width=17, echo = F, warning = F, message = F}
+opt_clusters <- 2
+clu0 <- cutree(hclust_res_clu0, k = opt_clusters) %>% as.data.frame() %>%
+  rownames_to_column('gene')
+names(clu0) <- c('gene', 'cluster')
+clu0 <- split.data.frame(clu0, f = clu0$cluster)
+clu0 <- as.data.frame(bind_rows(lapply(clu0, FUN = function(df){
+  df$order_in_cluster <- match(df$gene, hclust_order4heatmap_clu0[which(hclust_order4heatmap_clu0 %in% df$gene)])
+  return(df)
+})))
+
+row_anno <- clu0 %>% dplyr::select('gene', 'cluster') %>% column_to_rownames('gene')
+row_anno$cluster <- factor(row_anno$cluster)
+
+my_heatmap(df4heatmap_clu0,
+           border_col = NA,
+           treeheight_row = 0, treeheight_col = 0,
+                min_c = -0.8, max_c = 0.8,
+           annotation_row = row_anno)
+```
+
+I honestly don't think the sub-clustering here is all that convincing. It basically turns into strong signal + weaker signal.
+
+Do the other one.
+
+```{r subcluster_clu1, fig.width = 15, fig.height = 4, echo = F}
+
+clu2 <- downstream_anno %>% 
+  dplyr::filter(cluster == 1)
+df4heatmap_clu2 <- df4heatmap[clu2$gene, clu2$gene]
+hclust_res_clu2 <- hclust(dist(df4heatmap_clu2))
+hclust_order4heatmap_clu2 <- colnames(df4heatmap_clu2)[hclust_res_clu2$order]
+fviz_nbclust(df4heatmap_clu2 , FUN = hcut, method = "silhouette", k.max = 50)
+```
+
+
+
+```{r subcluster_heatmap, fig.height=15, fig.width=17, echo = F, warning = F, message = F}
+opt_clusters <- 5
+clu2 <- cutree(hclust_res_clu2, k = opt_clusters) %>% as.data.frame() %>%
+  rownames_to_column('gene')
+names(clu2) <- c('gene', 'cluster')
+clu2 <- split.data.frame(clu2, f = clu2$cluster)
+clu2 <- as.data.frame(bind_rows(lapply(clu2, FUN = function(df){
+  df$order_in_cluster <- match(df$gene, hclust_order4heatmap_clu2[which(hclust_order4heatmap_clu2 %in% df$gene)])
+  return(df)
+})))
+
+row_anno <- clu2 %>% dplyr::select('gene', 'cluster') %>% column_to_rownames('gene')
+row_anno$cluster <- factor(row_anno$cluster)
+
+my_heatmap(df4heatmap_clu2,
+           border_col = NA,
+           treeheight_row = 0, treeheight_col = 0,
+                min_c = -0.8, max_c = 0.8,
+           annotation_row = row_anno)
+```
+
+### Putting it together
+
+```{r, fig.height=35, fig.width=37, echo = F, warning = F, message = F}
+
+downstream_anno <- left_join(
+  downstream_anno,
+  clu2 %>% dplyr::select("gene", 'subcluster' = 'cluster', 'order_in_subcluster' = 'order_in_cluster')
+) %>% mutate(
+  subcluster = ifelse(is.na(subcluster), 0, subcluster),
+  order_in_subcluster = ifelse(is.na(subcluster), order_in_cluster, order_in_subcluster)
+)
+
+df4heatmap <- magpie_res %>%
+  dplyr::filter(target %in% targets_that_de & downstream_gene_name %in% downstream_genes2include) %>%
+  dplyr::select(c('target', 'downstream_gene_name', 'lfc')) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target') %>%
+  as.matrix() %>% cor()
+order4heatmap <- colnames(df4heatmap)[hclust(dist(df4heatmap))$order]
+row_anno <- downstream_anno  %>%
+  arrange(order_in_subcluster) %>%
+  arrange(subcluster) %>%
+             dplyr::select(c("gene", "subcluster")) %>%
+             column_to_rownames('gene')
+row_anno$subcluster <- factor(row_anno$subcluster)
+
+my_heatmap(df4heatmap[row.names(row_anno), row.names(row_anno)], 
+           cluster_rows = F, cluster_cols = F,
+           annotation_row = row_anno,
+           min_c = -1, max_c = 1,
+           border_col = NA,
+           treeheight_row = 0, treeheight_col = 0)
+
+```
+
+## GO Enrichment of Clusters
+
+### Heatmaps
+
+Get a heatmap of each cluster and figure out which of the complexes/other GO annotations are represented. 
+
+```{r heatmap_by_cluster, fig.width=15, fig.height=12, echo = F, warning = F, message = F}
+
+
+cluster_anno <- lapply(sort(unique(downstream_anno$subcluster)), FUN = function(cluster_ind){
+  #print(cluster_ind)
+  genes_in_cluster <- downstream_anno %>%
+    dplyr::filter(subcluster == cluster_ind) %>% .$gene
+  
+  go_ids_represented <- data.frame(
+    go_id = names(gprofiler_annotations),
+    go_term = gprofiler_terms$Term[match(names(gprofiler_annotations), gprofiler_terms$GO_ID)],
+    go_ontology = gprofiler_terms$Ontology[match(names(gprofiler_annotations), gprofiler_terms$GO_ID)],
+    n_overlap = unlist(lapply(gprofiler_annotations, FUN = function(a){length(which(genes_in_cluster %in% a))})),
+    term_size = unlist(lapply(gprofiler_annotations, length))
+  ) %>% mutate(frac_overlap = n_overlap/term_size) %>%
+    dplyr::filter(n_overlap >= 5) %>%
+    slice_max(frac_overlap, n = 5)
+  
+  msigdb_pathways_represented <- data.frame(
+    go_id = gsub(names(msig_db), pattern = "HALLMARK_", replacement = ""),
+    go_term = gsub(names(msig_db), pattern = "HALLMARK_", replacement = ""),
+    go_ontology = 'msig_db',
+    n_overlap = unlist(lapply(msig_db, FUN = function(a){length(which(genes_in_cluster %in% a))})),
+    term_size = unlist(lapply(msig_db, length))
+  ) %>% mutate(frac_overlap = n_overlap/term_size) %>%
+    dplyr::filter(n_overlap >= 5) %>%
+    slice_max(frac_overlap, n = 5)
+  
+  tfs_represented <- dorothea_tfs %>%
+    group_by(source) %>%
+    summarize(go_id = unique(source),
+              go_term = unique(source),
+              go_ontology = 'Dorothea',
+              n_overlap = length(which(target %in% genes_in_cluster)),
+              term_size = n() ) %>%
+    dplyr::select(c('go_id', 'go_term', 'go_ontology', 'n_overlap', 'term_size')) %>%
+    dplyr::filter(n_overlap > 0)
+  
+  func_anno <- as.data.frame(bind_rows(go_ids_represented,
+                                       msigdb_pathways_represented,
+                                       tfs_represented)) %>%
+    mutate(cluster = cluster_ind)
+  
+  ## do a heatmap as well to compare with replogle (see which are ipsc-specific)
+  df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+    dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+    dplyr::filter(downstream_gene_1 %in% genes_in_cluster & downstream_gene_2 %in% genes_in_cluster) %>%
+    reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+    column_to_rownames('downstream_gene_1') %>%
+    as.matrix()
+  df4heatmap_K562 <- downstream_downstream_cor_anno %>%
+    dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'K562_gwps_cor')) %>%
+    dplyr::filter(downstream_gene_1 %in% genes_in_cluster & downstream_gene_2 %in% genes_in_cluster) %>%
+    reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'K562_gwps_cor') %>%
+    column_to_rownames('downstream_gene_1') %>%
+    as.matrix()
+  
+  row_anno <- data.frame(
+    jerber_de = jerber_de_eff_deg$coef[match(genes_in_cluster, jerber_de_eff_deg$hgnc_symbol)],
+    pou5f1_de = magpie_res_split[["POU5F1"]]$lfc[match(genes_in_cluster, magpie_res_split[["POU5F1"]]$downstream_gene_name)]
+  ) %>%
+    mutate(
+      jerber_de = factor(ifelse(is.na(jerber_de), 'neither', ifelse(jerber_de > 0, 'high differentiation efficiency', 'low differentiation efficiency'))),
+      pou5f1_de =factor(ifelse(pou5f1_de > sig_abs_lfc_thresh, 'upregulated', ifelse(pou5f1_de < -sig_abs_lfc_thresh, 'down-regulated', 'neither')))
+    )
+  row.names(row_anno) <- genes_in_cluster
+  p <- double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_K562,
+                      min_c = -0.6, max_c = 0.6,
+                      annotation_row = row_anno,
+                      treeheight_row = 0, treeheight_col = 0, border_col = NA)
+  return(func_anno)
+}) %>% bind_rows () %>% as.data.frame()
+
+
+
+```
+### Cleaned up UMAP
+
+The cluster UMAPs are just too disjointed for me to hold out hope for this.
+
+```{r final_heatmap, fig.width = 17, fig.height = 10, echo = F, message = F, warning = F, eval = F}
+
+#claudia <- dplyr::filter(cluster_anno, cluster %in% c(7, 12))
+complexes_in_function <- list(
+  "Regulation of transcription" = sort(c("RNA N6-methyladenosine methyltransferase complex", "INO80 chromatin remodeling complex", "NuA4/Tip60-HAT complex")),
+  "Transcription" = sort(c("RNA Polymerase II", "iPSC maintennance", "Paf complex", "Mediator complex", "TFIID", "TFIIH", "CCR4-NOT complex", "STAGA complex")),
+  "RNA processing" = sort(c("Spliceosome", "Cleavage and polyadenylation factor")),
+  "Peptide synthesis" = sort(c("EIF2 complex", 'tRNA ligase activity', "Mitochondrial ribosome", "TOMM40 complex")),
+  'Translation and Post-translational processing' = sort(c('26S Proteasome', 'Integrator complex', "EIF3 complex", "Cytosolic ribosome", 'TREX complex', 'Exosome'))
+)
+row_label_df <- downstream_anno[match(order4heatmap, downstream_anno$gene),] %>%
+  mutate(heatmap_order = 1:dim(downstream_anno)[1]) %>%
+  group_by(subcluster) %>%
+  summarize(y_mean = 1 - 0.99*mean(heatmap_order)/dim(downstream_anno)[1])
+row_label_df$cluster_labels <- unlist(lapply(as.character(row_label_df$cluster_function), FUN = function(cl_fun){
+  paste0("**", cl_fun, '**<br>\n', paste0(complexes_in_function[[cl_fun]], collapse = '<br>'))
+}))
+
+row_anno <- downstream_anno %>% 
+  dplyr::select(c('gene', 'subcluster')) %>%
+  column_to_rownames('gene')
+colnames(row_anno) <- ' '
+
+df4heatmap_lowertri <- df4heatmap[order4heatmap, order4heatmap]
+df4heatmap_lowertri[upper.tri(df4heatmap_lowertri)] <- NA
+p <- my_heatmap(df4heatmap_lowertri,
+                treeheight_row = 0, treeheight_col = 0,
+                min_c = -0.8, max_c = 0.8,
+                show_rownames = F, show_colnames = F,
+                cluster_rows = F, cluster_cols = F, 
+                legend = F,annotation_legend = F,
+                annotation_row = row_anno,
+                annotation_colors = list(cluster_function = complex_cluster_colors),
+                #cellheight = 2.75, cellwidth = 3,
+                border_col = NA, na_col = "white")
+p <- ggarrange(p[[4]])
+p + 
+  annotate(geom = 'richtext', label = row_label_df$cluster_labels, 
+           x = 0, y = row_label_df$y_mean, 
+           #label.padding = grid::unit(rep(0, dim(row_label_df)[1]), "pt"),
+           label.color = NA,
+           hjust = 1, vjust = 0.5) + 
+  theme(plot.margin = unit(c(0,0,0,13), "cm"))
+
+data4heatmap <- list(df4heatmap = df4heatmap,
+                     order4heatmap = order4heatmap,
+                     target_anno = target_anno,
+                     complexes_in_function = complexes_in_function)
+saveRDS(data4heatmap, paste0(outdir, '/', date, '_data4heatmap.RDS'))
+
+```
+
+
+
+
+
+
+# UMAP Coordinates
+
+## No Labeling
+
+```{r umap_coords_all_downstream, echo = F, fig.width = 6, fig.height = 6}
+
+
+df4umap <- readRDS(paste0(outdir, '/', date, "_downstream_correlation.RDS"))
+
+set.seed(1)
+umap_coords <- umap(df4umap$df4heatmap)
+umap_coords <- data.frame(
+  gene = colnames(df4umap),
+  umap_1 = umap_coords$layout[,1],
+  umap_2 = umap_coords$layout[,2]
+)
+
+p <- ggplot(umap_coords %>% dplyr::filter(gene %in% downstream_genes2include), aes(x = umap_1, y = umap_2, 
+                             col = ifelse(gene %in% downstream_genes2include, 'y', 'n'),
+                             size = ifelse(gene %in% downstream_genes2include, 'y', 'n'),
+                             alpha = ifelse(gene %in% downstream_genes2include, 'y', 'n'),
+                             label = gene)) + 
+  #ggrepel::geom_text_repel(max.overlaps = 50) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  scale_color_manual('', values = c('y' = downstream_col, 'n' = 'gray')) + 
+  scale_size_manual('', values = c('y' = 0.6, 'n' = 0.2)) + 
+  scale_alpha_manual('', values = c('y' = 0.6, 'n' = 0.2)) + 
+  geom_point() + theme_bw() + theme(legend.position = 'none')
+print(p)
+
+saveRDS(umap_coords, paste0(outdir, '/', date, "_umap_coords_scratch.RDS"))
+
+```
+
+## Annotation
+
+```{r, echo = F}
+clusters2annotate <- list(
+  "H1 Histones" = c(grep(umap_coords$gene, pattern = "HIST", value = T), "H1F0", "H1FX"),
+  "Cytosolic ribosome" = unlist(strsplit(complex_meta$genes_in_complex[which(complex_meta$complex_name=="Ribosome, cytoplasmic")], "_")),
+  "Glycolysis" = c("C4orf3", "IGFBP2", "BNIP3", "PGK1", "FAM162A", "LDHA", "ALDOA", "ENO1", "PKM", "PGAM1", "TPI1"),
+  "Amino acid synthesis" = c("AARS", "ASS1", "ATF4", "BCAT1", "CARS", "CEBPB", "CHAC1", "CTH", "DDIT4", "EIF1", "EIF2S2", "EIF4EBP1", "ERP29", "GARS", "GPT2", "HAX1", "IFRD1", "MAP1B", "MARS", "MTHFD2", "PCK2", "PHGDH", "PSAT1", "PSPH", "PYCR1", "RARRES2", "RCN1", "SARS", "SESN2", "SHMT2", "SLC1A5", "SLC3A2", "SLC7A1", "SLC7A11", "SLC7A5", "STC2", "TSEN15", "WARS", "XPOT", "YARS"),
+  "Apoptosis via tp53" = c("AEN", "ASCC3", "BAX", "BBC3", "BBS9", "BLOC1S2", "CDK1", "DDB2", "FDXR", "IKBIP", "MDM2", "NINJ1", "NTPCR", "RPS27L", "RRM2B", "TM7SF3", "TRIAP1"),
+  'Fatty acid biosynthesis' = c("DHCR24", 'ACAT2', 'CYP51A1', 'SCD', 'IDI1', 'DHCR7', 'FDFT1', 'HMGCS1', 'INSIG1', 'MSMO1', 'HMGCR', 'PMVK', 'MVD', 'FDPS', 'LSS', 'SQLE',
+                                "FADS2", "ACLY", "LDLR", 'FASN', 'SC5D'),
+  'Protein folding in endoplasmic reticulum' = c("PDIA4", "PDIA3", "HSPA5", "CALR", "HSP90B1"),
+  "Nonsense-mediated decay" = c("ZFAS1", "GAS5", "EPB41L4A-AS1", 'CCNB1IP1'), ### EEF2 is not convincing, even if it clusters nearby
+  "Cellular maintennance\nCell cycle regulation\nATP synthesis\nSplicing" = unique(c(
+    msig_db[['HALLMARK_G2M_CHECKPOINT']],
+    msig_db[['HALLMARK_E2F_TARGETS']],
+    msig_db[['HALLMARK_OXIDATIVE_PHOSPHORYLATION']],
+    c( grep(umap_coords$gene, pattern = "MT-ND", value = T),
+       grep(umap_coords$gene, pattern = "MT-CO", value = T),
+       grep(umap_coords$gene, pattern = "NUDF", value = T),
+       grep(umap_coords$gene, pattern = "UQCR", value = T),
+       grep(umap_coords$gene, pattern = "COX", value = T),
+       grep(umap_coords$gene, pattern = "ATP", value = T))
+  ),
+  canonical_gene_sets[['KEGG_SPLICEOSOME']]), 
+  "Cellular differentiation\nEpithelial mesenchymal transition\nMAP/ERK pathway activators\nJAK/STAT signaling pathway\nWnt signaling pathway\nSrf pathway" = c(
+    msig_db[['HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION']],
+    "JARID2", "MACF1", "APP", "DST", "KDM5B", "CCND1", "FGF2", "VIM",
+    "DUSP6", "MYH10", "COL18A1", "TDGF1", "CD9", "ID3", "LIN28A",
+    'SOCS1', 'IFITM1', 'IFITM3', 'CD24', 'UTF1', 'RBP1', 'SOCS2',  'NEFL', 'CRABP1', 'MDK',
+    'CDH1',
+    c("ACTB", 'TAGLN', 'MYL9', 'CALD1', 'TPM4')
+  )
+)
+
+```
+
+
+## Plot Clusters
+
+```{r, warning = F, message = F, echo = F, fig.width = 6, fig.height = 6}
+
+cluster_umaps <- lapply(1:length(clusters2annotate), FUN = function(cl_ind){
+  cluster_name <- names(clusters2annotate)[cl_ind]
+  genes_in_cluster <- clusters2annotate[[cl_ind]]
+  p <- ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                                   col = ifelse(gene %in% genes_in_cluster, 'y', 'n'),
+                                   label = ifelse(gene %in% genes_in_cluster, gene, ''))) + 
+    ggtitle(gsub(cluster_name, pattern = '\n', replacement = ' ')) + 
+    scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+    ggrepel::geom_text_repel(max.overlaps = 50) + 
+    xlab("UMAP_1") + ylab("UMAP_2") + 
+    geom_point(size = 0.4) + theme_bw() + theme(legend.position = 'none')
+  return(p)
+})
+
+cluster_umaps
+```
+
+## Cleaned-up UMAP
+
+```{r, fig.width = 12, fig.height = 12}
+df4plot <- umap_coords %>%
+  mutate(pathway_label = '')
+for (cl_ind in 1:length(clusters2annotate)){
+  df4plot$pathway_label[which(df4plot$gene %in% clusters2annotate[[cl_ind]])] <- names(clusters2annotate)[cl_ind]
+}
+
+label_df <- df4plot %>%
+  dplyr::filter(pathway_label != '') %>%
+  group_by(pathway_label) %>%
+  summarize(label_x = mean(umap_1),
+            label_y = mean(umap_2))
+
+ggplot(df4plot, aes(x = umap_1, y = umap_2,
+                    col = ifelse(pathway_label == '', 'not labeled', 'labeled'),
+                    alpha = ifelse(pathway_label == '', 'not labeled', 'labeled'),
+                    size = ifelse(pathway_label == '', 'not labeled', 'labeled'))) + 
+  scale_color_manual('', values = c('not labeled' = 'gray', 'labeled' = downstream_col)) + 
+  scale_alpha_manual('', values = c('not labeled' = 0.4, 'labeled' = 0.4)) + 
+  scale_size_manual('', values = c('not labeled' = 0.5, 'labeled' = 1.5)) + 
+  geom_point() + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  annotate('text', x = label_df$label_x, y = label_df$label_y, label = label_df$pathway_label) + 
+  theme_bw() + theme(legend.position = 'none')
+
+data4umap <- list(
+  umap_coords = umap_coords,
+  clusters2annotate = clusters2annotate
+)
+saveRDS(data4umap, paste0(outdir, '/', date, '_data4umap.RDS'))
+  
+```
+
+# Returning to the Heatmap
+
+Do the UMAP, but on only the labelled genes.
+
+```{r, fig.width = 17, fig.height = 8, echo = F}
+df4heatmap <- readRDS(paste0(outdir, '/', date, "_downstream_correlation.RDS"))
+clusters2annotate <- readRDS(paste0(outdir, '/', date, '_data4umap.RDS'))$clusters2annotate
+clusters2annotate <- clusters2annotate[c("Amino acid synthesis",
+                                         "Apoptosis via tp53",
+                                         "Cytosolic ribosome",
+                                         "Glycolysis",
+                                         'Fatty acid biosynthesis',
+                                         "H1 Histones",
+                                         "Nonsense-mediated decay")]
+clusters2annotate[['Mitochondrial respiratory chain complexes I-V']] <- c(grep(umap_coords$gene, pattern = "MT-ND", value = T),
+                                                                           grep(umap_coords$gene, pattern = "UQCR", value = T),
+                                                                          grep(umap_coords$gene, pattern = "MT-CO|COX", value = T) , grep(umap_coords$gene, pattern = "ATP", value = T)  )
+
+genes2exclude <- c("COX7C", "ATP5MC2", "CDK1", "MT-ND6", "MT-ND5", "MT-CO1")
+                                       
+
+row_anno <- data.frame(
+  gene = as.vector(unlist(clusters2annotate)),
+  Pathway = as.vector(rep(names(clusters2annotate), unlist(lapply(clusters2annotate, length))))
+) %>% column_to_rownames('gene')
+genes4heatmap <- intersect(row.names(row_anno), row.names(df4heatmap))
+
+df4heatmap <- df4heatmap[genes4heatmap, genes4heatmap]
+order4heatmap <- hclust(dist(df4heatmap))$order
+df4heatmap <- df4heatmap[order4heatmap, order4heatmap]
+df4heatmap[upper.tri(df4heatmap)] <- NA
+df4heatmap <- df4heatmap[which(!(colnames(df4heatmap) %in% genes2exclude)), which(!(colnames(df4heatmap) %in% genes2exclude))]
+p <- my_heatmap(df4heatmap, 
+           na_col = 'white',
+           cluster_rows = F, cluster_cols = F, 
+           annotation_row = row_anno %>% dplyr::select('Pathway'),
+           show_rownames = F, show_colnames = F,
+           treeheight_row = 0, treeheight_col = 0,
+           #cellwidth = 2, cellheight =2,
+           border_col = NA,
+           min_c = -0.8, max_c = 0.8)
+
+order4heatmap <- row.names(df4heatmap)
+row_label_df <- row_anno %>%
+  rownames_to_column('gene') %>%
+  dplyr::filter(!(gene %in% genes2exclude))
+row_label_df <- row_label_df[match(order4heatmap, row_label_df$gene),]
+row_label_df <- row_label_df%>%
+  mutate(order = 1:n()) %>%
+  group_by(Pathway) %>%
+  summarize(mean_y = 1-0.92*mean(order)/length(order4heatmap))
+p <- ggarrange(p[[4]])
+p + 
+  annotate(geom = 'richtext', label = row_label_df$Pathway, 
+           x = 0, y = row_label_df$mean_y, 
+           label.color = NA,
+           hjust = 1, vjust = 0.5) + 
+  theme(plot.margin = unit(c(0,0,0,13), "cm"))
+
+data4heatmap <- list(df4heatmap = df4heatmap,
+                     order4heatmap = order4heatmap,
+                     row_label_df = row_label_df,
+                     row_anno = row_anno,
+                     clusters2annotate = clusters2annotate)
+saveRDS(data4heatmap, paste0(outdir, '/', date, '_data4heatmap.RDS'))
+
+
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
+```{r scratch_cluster_umap, eval = F, echo = F}
+genes_in_cluster <- grep(umap_coords$gene, pattern = "CD", value = T)
+#claudia1 <- gprofiler2::gost(genes_in_cluster)$result
+p <- ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                                col = ifelse(gene %in% genes_in_cluster, 'y', 'n'),
+                                label = ifelse(gene %in% genes_in_cluster, gene, ''))) + 
+  ggtitle("") + 
+  scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+  ggrepel::geom_text_repel(max.overlaps = 50) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  geom_point(size = 0.4) + theme_bw() + theme(legend.position = 'none')
+p
+
+cat(paste(downstream_anno %>% dplyr::filter(umap_1 > -1 & umap_2 >6) %>% .$gene %>% sort(), collapse = '", "'))
+
+ggplot(downstream_anno, aes(x = umap_1, y = umap_2, 
+                                 label = gene)) + 
+  ggtitle("") + 
+  xlim(c(0,1 )) +ylim(c(2.5, 3.5)) +
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  geom_point(size = 0.4) + theme_bw() + theme(legend.position = 'none')
+
+```
+
+
+```{r scratch_leftover_gene_heatmap, eval = F, echo = F, fig.width = 7, fig.height = 5}
+
+dg1 <- 'PPIA'; dg2 <- 'GAPDH'
+
+df4plot <- data.frame(
+  dg1 = magpie_res %>%
+  dplyr::filter(downstream_gene_name == dg1) %>% .$lfc,
+  dg2 = magpie_res %>%
+  dplyr::filter(downstream_gene_name == dg2) %>% .$lfc,
+  target = magpie_res %>%
+  dplyr::filter(downstream_gene_name == dg1) %>% .$target
+)
+
+p <- ggplot(df4plot, aes(x = dg1, y = dg2,
+                         label = target)) + 
+  xlab(dg1) + ylab(dg2) + 
+  geom_point(size = 0.4) + theme_bw()
+
+
+my_heatmap(df4umap[genes_left, genes_left], 
+           min_c = -1, max_c = 1, 
+           border_col = NA,
+           treeheight_row = 0, treeheight_col = 0)
+
+dorothea_tfs %>% dplyr::filter(source == "E2F")
+
+gprofiler_annotations[['GO:0034976']]
+ggplot(downstream_anno %>%
+         dplyr::filter((gene %in% genes_left)), aes(x = umap_1, y = umap_2, 
+                                 label = gene)) + 
+  ggtitle("") + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  geom_point(size = 1, col = 'red') + theme_bw() + theme(legend.position = 'none')
+
+
+# i think these were up/downregulated by lpprc
+df4plot <- downstream_anno %>%
+         dplyr::filter((gene %in% genes_left))
+"PPRC1"
+
+```
+
+
+
+
+
+
+

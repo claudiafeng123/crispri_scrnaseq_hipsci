@@ -1,0 +1,439 @@
+---
+title: "Histones and Apoptosis"
+author: "Claudia Feng"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "12c_highly_correlated_downstream_genes"
+  complex_of_interest : "histones_and_apoptosis"
+  experiment_name : "Magpie"
+---
+
+```{r, echo = F}
+HomeFolder <- params$home_folder
+ExperimentName <- params$experiment_name
+date <- params$date
+section_name <- params$section_name
+network_of_interest <- params$network_of_interest
+```
+
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = paste0(plotsdir, "/", tolower(gsub( x = params$complex_of_interest, pattern = " ", replacement = '_')), "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+ 
+# Overlap Between Histones and the TP53 Pathway
+
+## UMAP
+
+```{r highlighted_umap, warning = F, echo = F, fig.width = 6, fig.height = 6 }
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        col = ifelse(umap_2 > 5, "y", "n"))) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  scale_color_manual(values = c('y' = 'red', 'n' = 'gray')) + 
+  geom_point(size = 0.4) + theme_bw()  + theme(legend.position = 'none')
+
+```
+## Zoomed-in UMAP
+
+```{r highlighted_umap, warning = F, echo = F, fig.width = 6, fig.height = 6 }
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        label = gene)) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  xlim(c(2, 2.3)) + ylim(c(5.5,7)) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  geom_point() + theme_bw() 
+
+```
+
+Genes of interest are:
+
+```{r, echo = F}
+genes_of_interest <- umap_coords %>%
+  dplyr::filter(umap_2 > 5.5) %>%
+  .$gene %>% sort()
+print("All genes of interest:")
+cat(paste0(genes_of_interest, collapse = '\n'))
+
+
+histone_genes <- umap_coords %>%
+  dplyr::filter(umap_2 > 5) %>%
+  .$gene %>% grep(pattern = 'H1', value = T)
+print("Histone genes:")
+cat(paste0(histone_genes, collapse = '\n'))
+apoptosis_genes <- umap_coords %>%
+  dplyr::filter(umap_2 < 6 & umap_2 > 5.5) %>%
+  .$gene
+print("Apoptosis genes:")
+cat(paste0(apoptosis_genes, collapse = '\n'))
+
+```
+
+## Heatmap
+
+### Comparison to iPSC co-expression
+
+```{r heatmap_vs_ipsc_coexpression, fig.width = 5.25, fig.height=4.5, echo = F}
+
+downstream_genes2plot <- genes_of_interest
+sc_coexpression_genes <- sc_coexpression %>%
+  dplyr::filter(gene_1 %in% downstream_genes2plot & gene_2 %in% downstream_genes2plot)
+downstream_genes2plot <- sort(unique(c(sc_coexpression_genes$gene_1, sc_coexpression_genes$gene_2)))
+
+df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+df4heatmap_sc_coexpression <- matrix(1, nrow = length(downstream_genes2plot), ncol = length(downstream_genes2plot))
+colnames(df4heatmap_sc_coexpression) <- row.names(df4heatmap_sc_coexpression) <- downstream_genes2plot
+for (i in 1:length(downstream_genes2plot)){
+  for (j in 1:i){
+    if (i != j){
+      df4heatmap_sc_coexpression[downstream_genes2plot[i],downstream_genes2plot[j]] <- df4heatmap_sc_coexpression[downstream_genes2plot[j],downstream_genes2plot[i]] <- sc_coexpression_genes %>% dplyr::filter(gene_1 == downstream_genes2plot[j] & gene_2 ==downstream_genes2plot[i]) %>% .$correlation
+    }
+    
+  }
+}
+
+double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_sc_coexpression,
+               min_c = -0.6, max_c = 0.6,
+               border_col = NA,
+           treeheight_row = 0, treeheight_col = 0)
+```
+
+### Comparison to K562 correlation
+
+```{r heatmap_vs_k562_correlation, fig.width = 5.25, fig.height=4.5, echo = F}
+downstream_genes2plot <- genes_of_interest
+K562_genes <- downstream_downstream_cor_anno %>% 
+  dplyr::filter(!(is.na(K562_gwps_cor))) %>%
+  .$downstream_gene_1 %>%
+  unique() %>% sort()
+downstream_genes2plot <- intersect(downstream_genes2plot, K562_genes)
+
+df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+df4heatmap_K562 <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_K562,
+               min_c = -0.6, max_c = 0.6,
+               border_col = NA,
+           treeheight_row = 0, treeheight_col = 0)
+```
+
+## Overlapping Targets
+```{r}
+targets_that_de <- magpie_lfcs_by_downstream[c(apoptosis_genes, histone_genes)] %>%
+  bind_rows() %>% as.data.frame() %>%
+  group_by(target) %>%
+  summarize(
+    n_deg = sum(pval_adj < sig_pval_thresh ),
+    n_apoptosis_deg = sum(pval_adj < sig_pval_thresh & downstream_gene_name %in% apoptosis_genes),
+    n_histone_deg = sum(pval_adj < sig_pval_thresh & downstream_gene_name %in% histone_genes),
+    )
+```
+
+Slim pickings for common down-regulating targets.
+
+## Low correlations
+
+Check if the similarity between the two clusters is actually that convincing.
+
+```{r tp53_hist_high_cor_scatters, echo = F, fig.width = 8.5, fig.height=8, warning = F, message = F, echo = F}
+
+#dg1 <- "BBC3"; dg2 <- "HIST1H1E"
+downstream_genes_in_umap <- downstream_genes2include
+top_correlates <- downstream_downstream_cor_anno %>%
+  dplyr::filter(downstream_gene_1 %in% apoptosis_genes & downstream_gene_2 %in% histone_genes) %>%
+  slice_max(abs(iPSC_cor), n = 4)
+
+plotlist <- mapply(1:dim(top_correlates)[1], FUN = function(i){
+  dg1 <- top_correlates$downstream_gene_1[i]; dg2 <- top_correlates$downstream_gene_2[i]
+  df4plot <- data.frame(
+    dg1 = magpie_lfcs_by_downstream[[dg1]]$lfc,
+    dg2 = magpie_lfcs_by_downstream[[dg2]]$lfc,
+    target = magpie_lfcs_by_downstream[[dg2]]$target
+  )
+  p <- ggplot(df4plot, aes(x = dg1, y = dg2,
+                    label = ifelse((abs(dg1) > sig_abs_lfc_thresh & abs(dg2) > sig_abs_lfc_thresh), target, ''))) +
+    ggrepel::geom_text_repel(max.overlaps = 20) + 
+    xlab(dg1) + ylab(dg2) + 
+    geom_point(size =0.4) + theme_bw()
+  return(p)
+}, SIMPLIFY = F)
+ggarrange(plotlist = plotlist)
+
+```
+
+I'm really not that convinced. Try subsetting to just the genes we considered in the heatmap?
+
+
+```{r tp53_hist_high_cor_scatters_det_only, echo = F, fig.width = 8.5, fig.height=8, warning = F, message = F, echo = F}
+
+#dg1 <- "BBC3"; dg2 <- "HIST1H1E"
+target_genes_in_umap <- targets_that_de
+top_correlates <- downstream_downstream_cor_anno %>%
+  dplyr::filter(downstream_gene_1 %in% apoptosis_genes & downstream_gene_2 %in% histone_genes) %>%
+  slice_max(abs(iPSC_cor), n = 4)
+
+plotlist <- mapply(1:dim(top_correlates)[1], FUN = function(i){
+  dg1 <- top_correlates$downstream_gene_1[i]; dg2 <- top_correlates$downstream_gene_2[i]
+  df4plot <- data.frame(
+    dg1 = magpie_lfcs_by_downstream[[dg1]]$lfc,
+    dg2 = magpie_lfcs_by_downstream[[dg2]]$lfc,
+    target = magpie_lfcs_by_downstream[[dg2]]$target
+  ) %>% dplyr::filter(target %in% target_genes_in_umap)
+  p <- ggplot(df4plot, aes(x = dg1, y = dg2,
+                    label = ifelse((abs(dg1) > sig_abs_lfc_thresh & abs(dg2) > sig_abs_lfc_thresh), target, ''))) +
+    ggrepel::geom_text_repel(max.overlaps = 20) + 
+    xlab(dg1) + ylab(dg2) + 
+    geom_point(size =0.4) + theme_bw()
+  return(p)
+}, SIMPLIFY = F)
+ggarrange(plotlist = plotlist)
+
+```
+
+Lol no. 
+
+Do they correlate well with CDK1?
+
+```{r tp53_hist_low_cor_scatters, echo = F, fig.width = 8.5, fig.height=8, warning = F, message = F, echo = F}
+
+#dg1 <- "BBC3"; dg2 <- "HIST1H1E"
+
+top_correlates <- downstream_downstream_cor_anno %>%
+  dplyr::filter(downstream_gene_1 %in% c(apoptosis_genes, histone_genes) & downstream_gene_2 %in% "CDK1") %>%
+  slice_max(abs(iPSC_cor), n = 4)
+
+plotlist <- mapply(1:dim(top_correlates)[1], FUN = function(i){
+  dg1 <- top_correlates$downstream_gene_1[i]; dg2 <- top_correlates$downstream_gene_2[i]
+  df4plot <- data.frame(
+    dg1 = magpie_lfcs_by_downstream[[dg1]]$lfc,
+    dg2 = magpie_lfcs_by_downstream[[dg2]]$lfc,
+    target = magpie_lfcs_by_downstream[[dg2]]$target
+  )
+  p <- ggplot(df4plot, aes(x = dg1, y = dg2,
+                    label = ifelse((abs(dg1) > sig_abs_lfc_thresh & abs(dg2) > sig_abs_lfc_thresh), target, ''))) +
+    ggrepel::geom_text_repel(max.overlaps = 20) + 
+    xlab(dg1) + ylab(dg2) + 
+    geom_point(size =0.4) + theme_bw()
+  return(p)
+}, SIMPLIFY = F)
+ggarrange(plotlist = plotlist)
+
+```
+
+Still not convincing. I wonder what's up with the correlation.
+
+
+# Histones
+
+## Choose Genes
+### Low correlations
+
+Check that the lowly correlated genes are actually convincing.
+
+```{r correlation_between_clusters, echo = F,warning = F, message = F, fig.width = 10, fig.height = 9}
+
+#dg1 <- "BBC3"; dg2 <- "HIST1H1E"
+top_correlates <- downstream_downstream_cor_anno %>%
+  dplyr::filter(downstream_gene_1 %in% genes_of_interest & downstream_gene_2 %in% genes_of_interest & downstream_gene_1 < downstream_gene_2) %>%
+  slice_min(iPSC_cor, n = 4)
+
+plotlist <- mapply(1:dim(top_correlates)[1], FUN = function(i){
+  dg1 <- top_correlates$downstream_gene_1[i]; dg2 <- top_correlates$downstream_gene_2[i]
+  df4plot <- data.frame(
+    dg1 = magpie_lfcs_by_downstream[[dg1]]$lfc,
+    dg2 = magpie_lfcs_by_downstream[[dg2]]$lfc,
+    target = magpie_lfcs_by_downstream[[dg2]]$target
+  )
+  p <- ggplot(df4plot, aes(x = dg1, y = dg2,
+                    label = ifelse((abs(dg1) > sig_abs_lfc_thresh & abs(dg2) > sig_abs_lfc_thresh), target, ''))) +
+    ggrepel::geom_text_repel(max.overlaps = 20) + 
+    xlab(dg1) + ylab(dg2) + 
+    geom_point(size =0.4) + theme_bw()
+  return(p)
+}, SIMPLIFY = F)
+ggarrange(plotlist = plotlist)
+
+```
+
+
+### Other Correlated Genes
+
+```{r dist_of_correlation_across_clusters, echo = F}
+
+df4plot <- downstream_downstream_cor_anno %>%
+  dplyr::filter(downstream_gene_1 %in% genes_of_interest) %>%
+  mutate(in_cluster = ifelse(downstream_gene_2 %in% genes_of_interest, 'in_cluster', 'outside_cluster'))
+
+ggplot(df4plot %>%
+         dplyr::filter(downstream_gene_1 != downstream_gene_2), aes(x = iPSC_cor, fill = in_cluster)) + 
+  scale_fill_manual('', values = c("in_cluster" = downstream_col, 'outside_cluster' = 'gray')) + 
+  xlab("Correlation") +ylab("") + 
+  geom_density(alpha = 0.4) + theme_bw() + theme(legend.position = 'none')
+
+#claudia <- df4plot %>% dplyr::filter(in_cluster == 'outside_cluster')
+```
+
+
+
+
+## Targets Driving Correlation
+
+## Correlation Plots
+
+There really aren't that many genes, so plot the correlation for all of them.
+
+```{r hist_low_cor_scatters, echo = F, fig.width = 8.5, fig.height=8, warning = F, message = F, echo = F}
+
+dg1 <- "HIST1H1E"; dg2 <- "HIST1H1B"
+
+top_correlates <- downstream_downstream_cor_anno %>%
+  dplyr::filter(downstream_gene_1 %in% genes_of_interest & downstream_gene_2 %in% genes_of_interest & downstream_gene_1 < downstream_gene_2) %>%
+  slice_max(iPSC_cor, n = 4)
+
+plotlist <- mapply(1:dim(top_correlates)[1], FUN = function(i){
+  dg1 <- top_correlates$downstream_gene_1[i]; dg2 <- top_correlates$downstream_gene_2[i]
+  df4plot <- data.frame(
+    dg1 = magpie_lfcs_by_downstream[[dg1]]$lfc,
+    dg2 = magpie_lfcs_by_downstream[[dg2]]$lfc,
+    target = magpie_lfcs_by_downstream[[dg2]]$target
+  )
+  p <- ggplot(df4plot, aes(x = dg1, y = dg2,
+                    label = ifelse((abs(dg1) > sig_abs_lfc_thresh & abs(dg2) > sig_abs_lfc_thresh), target, ''))) +
+    ggrepel::geom_text_repel(max.overlaps = 20) + 
+    xlab(dg1) + ylab(dg2) + 
+    geom_point(size =0.4) + theme_bw()
+  return(p)
+}, SIMPLIFY = F)
+ggarrange(plotlist = plotlist)
+
+```
+
+## Top Targets
+
+Seems like CDH2 is universally down-expressed and CDH8 causes up-expression. Make it official with actual counts.
+
+```{r, echo = F, warning = F, message = F, fig.width = 12, fig.height = 4}
+target_de_counts <- magpie_lfcs %>%
+  bind_rows() %>% as.data.frame() %>%
+  #dplyr::filter(pval_adj < sig_pval_thresh) %>%
+  group_by(target) %>%
+  summarize(
+    n_deg = sum(pval_adj < sig_pval_thresh),
+    n_upregulated = length(which(lfc > 0 & pval_adj < sig_pval_thresh)),
+    n_downregulated = length(which(lfc < 0 & pval_adj < sig_pval_thresh)),
+    n_deg_in_cluster = sum(downstream_gene_name %in% histone_genes & pval_adj < sig_pval_thresh),
+    n_downregulated_in_cluster =length(which(downstream_gene_name %in% histone_genes & lfc < 0 & pval_adj < sig_pval_thresh)),
+    n_upregulated_in_cluster = length(which(downstream_gene_name %in% histone_genes & lfc > 0 & pval_adj < sig_pval_thresh))
+  ) 
+```
+
+I didn't think this was all that great because there weren't a lot of genes that up/down-regulate the histones. My guess is that we're under-powered here. Maybe just do a heatmap
+
+```{r}
+top_genes <- magpie_lfcs %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(downstream_gene_name %in% ) %>%
+  group_by(target) %>%
+  slice_max(abs(lfc))
+```
+
+
+
+# Save Files
+
+```{r}
+fwrite(target_de_counts, paste0(outdir, '/', tolower(gsub( x = params$complex_of_interest, pattern = " ", replacement = '_')), date, "_targets_that_cause_de.tsv"), sep = '\t')
+```
+
+
+# TP53
+
+## Functional Enrichment of Genes
+
+Check for functional enrichment of genes in the cluster
+
+```{r}
+gprofiler_res <- gprofiler2::gost(apoptosis_genes)$result
+```
+
+## Genes that Up/Downregulate the Pathway
+
+```{r, echo = F}
+targets_that_de <- magpie_lfcs_by_downstream[apoptosis_genes] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(target != downstream_gene_name) %>%
+  group_by(target) %>%
+  summarize(
+    n_deg = sum(pval_adj < sig_pval_thresh ),
+    n_upregulated = sum(pval_adj < sig_pval_thresh  & lfc > 0),
+    n_downregulated = sum(pval_adj < sig_pval_thresh  & lfc < 0),
+    n_downregulated_excl_target = sum(pval_adj < sig_pval_thresh  & lfc < 0 & target != downstream_gene_name),
+    n_downstream_in_cluster = length(apoptosis_genes)
+  ) %>%
+  mutate(
+    num_targets_total = target_meta$n_downstream_excl_target[match(target, target_meta$gene)],
+    is_tf = target %in% tfs$source,
+    is_tf_target = target %in% tfs$target,
+    in_cluster = target %in% apoptosis_genes
+  ) %>%
+  dplyr::filter(!(target %in% c(off_targets$target_gene, off_targets$off_target_gene))) %>%
+  dplyr::mutate(
+    sensitivity = n_deg/num_targets_total,
+    precision = n_deg/length(apoptosis_genes)
+  ) %>% dplyr::filter(sensitivity > 0.2 & precision > 0.2 & !(target %in% genes2exclude))
+targets_that_de <- left_join(targets_that_de, target_meta %>% dplyr::select(c("target" = "gene", contains("lfc"))))
+to_save = list(
+  targets_that_de = targets_that_de,
+  genes_of_interest = apoptosis_genes
+)
+saveRDS(to_save, paste0(outdir, '/', date, '_targets_that_cause_apoptosis.RDS'))
+
+ggplot(targets_that_de, aes(x = n_upregulated, y = pre_day10_lfc_mean)) + 
+  geom_point()
+```
+
+Do the genes that 
+
+## TFs with Targets in the Pathway
+
+```{r}
+tfs_with_targets <- tfs %>%
+  group_by(source) %>%
+  summarize(n_targets = n(),
+            n_targets_in_pathway = sum(target %in% apoptosis_genes)) %>%
+  dplyr::filter()
+```
+
+
+## Target-Downstream Effects
+
+# Overlapping Effects
+
+## 
+
+# Session info
+
+```{r session_info}
+sessionInfo()
+```

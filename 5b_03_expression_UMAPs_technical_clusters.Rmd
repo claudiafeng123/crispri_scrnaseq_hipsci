@@ -1,0 +1,479 @@
+---
+title: "Generate overall UMAP plots of the data using all assigned cells"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  correction: "technical"
+  experiment_name : "Magpie"
+  perturbation_status : "unperturbed"
+  date: "2022-08-15"
+  section_name: "5b_expression_UMAPs"
+  subsection_name : "5b_03_expression_UMAPs_Magpie_clusters"
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE}
+library(Cairo)
+knitr::opts_chunk$set(fig.path = paste0(plotsdir, '/'), dev=c("CairoPNG", "pdf"))
+```
+
+Everything in this section should be unperturbed Magpie cells.
+
+# Cell Types in the Genome-wide Screen (Magpie)
+
+```{r, fig.width = 8, fig.height = 6, echo = F, message = F, warning = F}
+
+ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, col = seurat_clusters)) + 
+  ggtitle("Magpie Perturbed Cells, Corrected for Technical Covariates and Cell Line") + 
+  geom_point(size = 0.2, alpha = 0.5) + theme_bw() + theme(legend.position = 'none')
+
+
+```
+We see two big clusters, as well as some other smaller clusters. Want to figure out what's driving the variance and obtain the DEG between the two clusters.
+
+# Drivers of variance
+## UMAPs By Cell Line
+
+```{r UMAP_colored_by_line, echo = F, fig.width = 25, fig.height = 20, echo = F}
+
+cell_lines <- sort(unique(df4plot$cell_line))
+plotlist <- mapply(cl =  cell_lines, FUN = function(cl){
+  df4plot1 <- df4plot %>%
+    mutate(of_interest = ifelse(cell_line == cl, 'y', 'n')) %>%
+    dplyr::select(c("UMAP_1", "UMAP_2", "of_interest")) %>%
+    arrange(of_interest)
+  
+  p <- ggplot(df4plot1, aes(x = UMAP_1, y = UMAP_2, 
+                      col = of_interest,
+                      alpha = of_interest,
+                      size = of_interest)) + 
+    scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+    scale_alpha_manual('', values = c('y' = 0.6, 'n' = 0.2)) + 
+    scale_size_manual('', values = c('y' = 0.8, 'n' = 0.2)) + 
+    ggtitle(cl) + 
+    geom_point() + theme_bw() + theme(legend.position = 'none')
+
+  return(p)
+  
+}, SIMPLIFY = F )
+#pdf('scratch/2023-02-05_the_umap_by_line.pdf', width = 25, height = 20)
+print(ggarrange(plotlist = plotlist))
+#dev.off()
+
+
+```
+
+
+## UMAPs by Pool
+
+```{r UMAP_colored_by_pool, echo = F, fig.width = 20, fig.height = 12, echo = F}
+
+
+cell_lines <- sort(unique(df4plot$Pool))
+plotlist <- mapply(cl =  cell_lines, FUN = function(cl){
+  df4plot1 <- df4plot %>%
+    mutate(of_interest = ifelse(Pool == cl, 'y', 'n')) %>%
+    dplyr::select(c("UMAP_1", "UMAP_2", "of_interest")) %>%
+    arrange(of_interest)
+  
+  p <- ggplot(df4plot1, aes(x = UMAP_1, y = UMAP_2, 
+                      col = of_interest,
+                      alpha = of_interest,
+                      size = of_interest)) + 
+    scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+    scale_alpha_manual('', values = c('y' = 0.6, 'n' = 0.2)) + 
+    scale_size_manual('', values = c('y' = 0.8, 'n' = 0.2)) + 
+    ggtitle(cl) + 
+    geom_point() + theme_bw() + theme(legend.position = 'none')
+
+  return(p)
+  
+}, SIMPLIFY = F )
+#pdf('scratch/2023-02-05_the_umap_by_line.pdf', width = 25, height = 20)
+print(ggarrange(plotlist = plotlist))
+#dev.off()
+
+
+
+```
+
+
+
+## UMAPs by Technical Covariates
+
+```{r UMAP_by_technical_covariates, fig.width = 20, fig.height = 4, echo = F}
+p1 <- ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, col = nCount_RNA)) + 
+  geom_point(size = 0.4, alpha = 0.2) + theme_bw()
+p2 <- ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, col = nCount_guides)) + 
+  geom_point(size = 0.4, alpha = 0.2) + theme_bw()
+p3 <- ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, col = percent_MT)) + 
+  geom_point(size = 0.4, alpha = 0.2) + theme_bw()
+#pdf("scratch/blobby_umap/2023-02-06_umap_by_technical_covariates.pdf", width = 15, height = 4)
+print(ggarrange(p1, p2, p3, nrow = 1))
+#dev.off()
+```
+
+Based on the mitochondrial percentage, we'll exclude the top cluster.
+
+## UMAPs by CRISPR sequence counts
+
+```{r UMAP_by_CRISPR_sequence, fig.width = 15, fig.height = 8, echo = F}
+
+crispr_sequences <- gsub(list.files(file.path(ResourcesFolder, "reference_sequences", "Magpie_added_sequences"), pattern = "[.]gtf"), pattern = "[.]gtf", replacement = "")
+
+pl <- mapply(crispr_sequence=crispr_sequences, FUN = function(crispr_sequence){
+  df4plot1 <- select(df4plot, c("UMAP_1", "UMAP_2", all_of(crispr_sequence)))
+  names(df4plot1)[3] <- "C"
+  df4plot1 <- mutate(df4plot1, 
+                     expressed = ifelse(C > 0, "expressed", "not expressed"))
+  p1 <- ggplot() + 
+    geom_point(data = df4plot1, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.1) + 
+    geom_pointdensity(data = df4plot1 %>% filter(expressed == "expressed"), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle(crispr_sequence) + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+}, SIMPLIFY = F)
+#pdf("scratch/blobby_umap/2023-02-06_umap_by_technical_covariates.pdf", width = 15, height = 8)
+print(ggarrange(plotlist = pl))
+#dev.off()
+```
+
+
+Some sort of density distribution happening, but I'm not convinced that it's not just a density of selected cells situtation. Also these are all unassigned cells so it' not like there's a CRISPR effectiveness going on.
+
+## UMAPs by Inlet
+
+```{r UMAP_colored_by_inlet, echo = F, fig.width = 20, fig.height = 12}
+cell_lines <- sort(unique(df4plot$Pool))
+plotlist <- mapply(cl =  cell_lines, FUN = function(cl){
+  df4plot1 <- df4plot %>%
+    mutate(of_interest = ifelse(Pool == cl, 'y', 'n')) %>%
+    dplyr::select(c("UMAP_1", "UMAP_2", "of_interest")) %>%
+    arrange(of_interest)
+  
+  p <- ggplot(df4plot1, aes(x = UMAP_1, y = UMAP_2, 
+                      col = of_interest,
+                      alpha = of_interest,
+                      size = of_interest)) + 
+    scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+    scale_alpha_manual('', values = c('y' = 0.6, 'n' = 0.2)) + 
+    scale_size_manual('', values = c('y' = 0.8, 'n' = 0.2)) + 
+    ggtitle(cl) + 
+    geom_point() + theme_bw() + theme(legend.position = 'none')
+
+  return(p)
+  
+}, SIMPLIFY = F )
+#pdf('scratch/2023-02-05_the_umap_by_line.pdf', width = 25, height = 20)
+print(ggarrange(plotlist = plotlist))
+#dev.off()
+
+
+```
+There's a lot of inlets so also do one as a whole:
+
+```{r UMAP_colored_by_inlet_one_plot, echo = F, fig.width = 8, fig.height = 6}
+ggplot(data = df4plot, aes(x = UMAP_1, y= UMAP_2, col = orig.ident)) + 
+    geom_point(size = 0.4, alpha = 0.3) + 
+    theme_bw() + theme(legend.position = 'none')
+  
+```
+## UMAPs by Timepoint
+
+```{r UMAP_colored_by_timepoint, echo = F, fig.width = 15, fig.height = 12}
+
+cell_lines <- sort(unique(df4plot$Timepoint))
+plotlist <- mapply(cl =  cell_lines, FUN = function(cl){
+  df4plot1 <- df4plot %>%
+    mutate(of_interest = ifelse(Timepoint == cl, 'y', 'n')) %>%
+    dplyr::select(c("UMAP_1", "UMAP_2", "of_interest")) %>%
+    arrange(of_interest)
+  
+  p <- ggplot(df4plot1, aes(x = UMAP_1, y = UMAP_2, 
+                      col = of_interest,
+                      alpha = of_interest,
+                      size = of_interest)) + 
+    scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+    scale_alpha_manual('', values = c('y' = 0.6, 'n' = 0.2)) + 
+    scale_size_manual('', values = c('y' = 0.8, 'n' = 0.2)) + 
+    ggtitle(cl) + 
+    geom_point() + theme_bw() + theme(legend.position = 'none')
+
+  return(p)
+  
+}, SIMPLIFY = F )
+#pdf('scratch/2023-02-05_the_umap_by_line.pdf', width = 25, height = 20)
+print(ggarrange(plotlist = plotlist))
+#dev.off()
+
+  
+```
+
+## UMAPs by Batch
+
+```{r UMAP_colored_by_batch, echo = F, fig.width = 8, fig.height = 6}
+ggplot(data = df4plot, aes(x = UMAP_1, y= UMAP_2, col = as.character(Batch))) + 
+    geom_point(size = 0.4, alpha = 0.3) + 
+    theme_bw() + theme(legend.position = 'none')
+  
+```
+
+## UMAPs by Line Metadata
+
+### UMAPs by Sex
+
+```{r UMAP_by_sex, echo = F, fig.width = 8, fig.height = 3, echo = F}
+
+## sex
+p_male <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(sex == "Male"), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("Male") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+  p_female <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(sex == "Female"), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("Female") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+plot <- ggarrange(p_male, p_female, ncol = 2)
+print(plot)
+```
+
+So it is not split by sex.
+
+### UMAPs by Donor Age
+
+```{r UMAP_by_age, echo = F, fig.width = 10, fig.height = 3, echo = F}
+
+## age
+  p_young <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(age %in% c("25-29", "40-44", "45-49") ), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("< 50 yrs.") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+p_middle <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(age %in% c("50-54", "55-59") ), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("50 < A < 60 yrs.") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+p_old <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(age %in% c("60-64", "65-69", "70-74", "75-79") ), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("> 60 yrs.") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+ plot <- ggarrange(p_young, p_middle, p_old, ncol = 3)
+  #p <- rasterize(plot, layers='Point', dpi=300)
+  print(plot)
+```
+
+### UMAPs by Pluripotency Score
+
+```{r UMAP_by_pluripotency_score, echo = F, fig.width = 12, fig.height = 8, echo = F}
+ #df4plot1 <- left_join(df4plot, line_metadata, by = c("cell_line" = "name"))
+
+## sex
+p_1 <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(pluripotency_score < 10), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("Pluripotency Score < 10") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+p_2 <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(pluripotency_score < 20 & pluripotency_score > 10), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("10 < Pluripotency Score < 20") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+p_3 <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(pluripotency_score < 30 & pluripotency_score > 20), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("20 < Pluripotency Score < 30") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+p_4 <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter( pluripotency_score > 30), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("Pluripotency Score > 30") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+plot <- ggarrange(p_1, p_2, p_3, p_4, ncol = 2, nrow = 2)
+  print(plot)
+```
+I cannot tell.
+
+
+### UMAPs by Novelty Score
+
+```{r UMAP_by_novelty_score, echo = F, fig.width = 12, fig.height = 8, echo = F}
+ #df4plot1 <- left_join(df4plot, line_metadata, by = c("cell_line" = "name"))
+
+## sex
+p_1 <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(novelty_score < 1), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("Novelty Score < 1") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+p_2 <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(novelty_score < 1.3 & novelty_score > 1), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("1 < Novelty Score < 1.3") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+p_3 <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter(novelty_score < 1.5 & novelty_score > 1.3), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("1.3 < Novelty  Score < 1.5") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+p_4 <- ggplot() + 
+    geom_point(data = df4plot, aes(x = UMAP_1, y= UMAP_2), col = "gray", size = 0.1, alpha = 0.01) + 
+    geom_pointdensity(data = df4plot %>% filter( novelty_score > 1.5), mapping = aes(x = UMAP_1, y = UMAP_2), size = 0.2, alpha = 0.2) +  ggtitle("Novelty Score > 1.5") + 
+    scale_color_viridis() + theme_bw() + theme(legend.position = 'none')
+plot <- ggarrange(p_1, p_2, p_3, p_4, ncol = 2, nrow = 2)
+  #p <- rasterize(plot, layers='Point', dpi=300)
+  print(plot)
+```
+
+Seems like low novelty score is on the left, high novelty score on the right. The Kilpinen paper says the higher quality lines have low novelty score and high pluripotency.
+
+### Novelty vs. Pluripotency
+
+```{r novelty_vs_pluripotency, fig.width = 6, fig.height = 6}
+
+ggplot(line_metadata, aes(x = pluripotency_score, y = novelty_score, 
+                          label = name)) + 
+  ggrepel::geom_text_repel(col = 'red') + 
+  xlab("Pluripotency Score") + ylab("Novelty Score") + 
+  geom_point() + theme_bw()
+
+```
+To quote the Pluritest website: A pluripotent cell line is characterized as passing the PluriTest if it simultaneously exhibits a high Pluripotency and a low-novelty score. So the kolf lines should be the "best" ones. Based on this, it seems like the more pluripotent cells are in the cluster on the left and the less pluripotent cells are on the right.
+
+## UMAPs by Differentiation Efficiency
+
+```{r UMAP_by_differentiation_efficiency, echo = F, fig.width = 12, fig.height = 8, echo = F}
+ df4plot1 <- left_join(df4plot, jerber_differentiation_efficiency) %>%
+  dplyr::filter(!is.na(diff_efficiency))
+
+## sex
+ggplot(df4plot1, aes(x = UMAP_1, y= UMAP_2, col = in_study)) + 
+  scale_color_manual('', values = c('failed' = 'darkred', 'succeeded' = 'darkgreen')) + 
+    geom_point(size = 0.4, alpha = 0.4) + 
+    ggtitle("Differentiation to Neurons") + 
+  theme_bw() + theme(legend.position = 'none')
+
+```
+
+
+# Clustering
+
+Use Seurat to find DE genes. UMAP is highlighted by the clusters used to calculated DEG.
+
+## Find the Clusters
+
+```{r UMAP_by_cluster, fig.width = 25, fig.height = 20, echo = F}
+
+cell_lines <- sort(unique(df4plot$seurat_clusters))
+plotlist <- mapply(cl =  cell_lines, FUN = function(cl){
+  df4plot1 <- df4plot %>%
+    mutate(of_interest = ifelse(seurat_clusters == cl, 'y', 'n')) %>%
+    dplyr::select(c("UMAP_1", "UMAP_2", "of_interest")) %>%
+    arrange(of_interest)
+  
+  p <- ggplot(df4plot1, aes(x = UMAP_1, y = UMAP_2, 
+                      col = of_interest,
+                      alpha = of_interest,
+                      size = of_interest)) + 
+    scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+    scale_alpha_manual('', values = c('y' = 0.6, 'n' = 0.2)) + 
+    scale_size_manual('', values = c('y' = 0.8, 'n' = 0.2)) + 
+    ggtitle(cl) + 
+    geom_point() + theme_bw() + theme(legend.position = 'none')
+
+  return(p)
+  
+}, SIMPLIFY = F )
+#pdf('scratch/2023-02-05_the_umap_by_line.pdf', width = 25, height = 20)
+print(ggarrange(plotlist = plotlist))
+#dev.off()
+
+
+```
+
+So we want to compare Clusters 0, 3, 4, 5, 6 together and Clusters 1, 2 and 12 together. I'm not sure what to make of Cluster 5 since it straddles both clusters, so I will remove it from analysis. I've ignored clusters 7-11, since they seem to be driven by other things. For example, Cluster 11 seemed to be high mitochondrial % and Cluster 10 was driven by two cell lines (from different donors) from a single batch.
+
+## Knockdown Bias
+
+### Assign Cells
+
+```{r, echo = F}
+
+high_novelty_clusters <- c("1", "2", "12")
+low_novelty_clusters <- c("0", "3", "4", "5", "6")
+
+```
+
+```{r, echo = F}
+
+cluster_assignment <- df4umap %>%
+  mutate(novelty_cluster = ifelse(as.character(seurat_clusters) %in% high_novelty_clusters, 'High Novelty', 
+                                  ifelse(as.character(seurat_clusters) %in% low_novelty_clusters, "Low Novelty", "unassigned")))
+fwrite(cluster_assignment, paste0(outdir, "/", date, "_", config, "_cluster_assignment.tsv"), sep = "\t", row.names = T)
+
+table(cluster_assignment$novelty_cluster)
+
+```
+
+### Check for Bias in Knockdowns
+
+```{r, echo = F}
+p_high <- length(which(cluster_assignment$novelty_cluster == "High Novelty"))/length(which(cluster_assignment$novelty_cluster %in% c("High Novelty", "Low Novelty")))
+clusters_by_target <- cluster_assignment %>%
+  group_by(target_gene_name) %>%
+  summarize(n_high_novelty = length(which(novelty_cluster == "High Novelty")),
+            n_low_novelty = length(which(novelty_cluster == "Low Novelty")),
+            n_unassigned = length(which(novelty_cluster == "Unassigned")),
+            n_cells = n()) %>%
+  mutate(pval_high_novelty = pbinom(n_high_novelty, size = n_cells, prob = p_high, lower.tail = F),
+         pval_low_novelty = pbinom(n_low_novelty, size = n_cells, prob = 1-p_high, lower.tail = F)) %>%
+  dplyr::filter(n_cells > 20)
+clusters_by_target$pval_adj_high_novelty <- p.adjust(clusters_by_target$pval_high_novelty, method = 'BH')
+clusters_by_target$pval_adj_low_novelty <- p.adjust(clusters_by_target$pval_low_novelty, method = 'BH')
+fwrite(clusters_by_target, paste0(outdir, '/', date, '_', config, '_clusters_by_target.tsv'), sep = '\t')
+```
+
+Top Hits
+
+```{r, echo = F}
+clusters_by_target %>% slice_min(pval_adj_high_novelty, n= 10) %>% arrange(pval_adj_high_novelty) %>% knitr::kable()
+```
+
+## Find DEG
+
+
+```{r find_deg,eval = F,  echo = F}
+
+deg <- FindMarkers(inlets_combined,
+            ident.1 = high_novelty_clusters, ident.2 = low_novelty_clusters,
+            logfc.threshold = 0.1)
+#saveRDS(deg, paste0(outdir, '/', date, '_', config, '_cluster_deg.RDS'))
+deg <- deg %>%
+  rownames_to_column('downstream_gene_name') %>%
+  mutate(downstream_gene_name = unlist(lapply(strsplit(downstream_gene_name, ':'), "[[", 2)))
+fwrite(deg, paste0(outdir, '/', date, '_', config, '_cluster_deg.tsv'), sep = '\t')
+
+```
+
+## GO Enrichment of Clusters
+
+```{r go_enrichment, eval = F, echo = F}
+regressed_lfc <- fread(paste0(outdir, '/', date, '_', config, '_cluster_deg.tsv'))
+regressed_lfc$pval_adj <- p.adjust(regressed_lfc$pval, method = 'BH')
+cluster_markers <- regressed_lfc %>% dplyr::filter(pval_adj < sig_pval_thresh) %>% .$downstream_gene_name
+go_enrichment <- gprofiler2::gost(cluster_markers)$result
+go_enrichment <- select(go_enrichment, c("p_value", "precision", "recall", "term_id", "term_name"))
+ggplot(go_enrichment %>% slice_min(p_value, n = 20), aes(x = -log10(p_value), y = reorder(term_name, -p_value))) + 
+  xlab("-log10 p-value") + ylab("") + ggtitle("GO term Enrichment for DE Genes") + 
+  geom_bar(stat = 'identity') + theme_bw() 
+```
+
+## Correlation of DEG with Differentiation Efficiency
+
+
+```{r deg_diff_eff_scatter, echo = F, fig.width = 5, fig.height = 5, warning = F, message=F}
+regressed_lfc <- fread(paste0(outdir, '/', date, '_', config, '_cluster_deg.tsv'))
+df4plot1 <- left_join(regressed_lfc %>% dplyr::select(c('downstream_gene_name', 'pica_pval_adj' = 'p_val_adj', 'pica_lfc' = 'avg_log2FC')),
+                     jerber_de_eff_deg %>% dplyr::select(c('downstream_gene_name' = 'hgnc_symbol', 'jerber_lfc' = 'coef', 'jerber_pval_adj' = 'pval_adj'))) %>%
+  dplyr::filter(!(is.na(jerber_lfc)))
+ggplot(df4plot1, aes(x = jerber_lfc, y = pica_lfc, label = downstream_gene_name)) +
+  ggrepel::geom_label_repel() + 
+  ylab("Cluster Log2FC") + xlab("Differentiation Efficiency Score") + 
+  geom_point(size = 0.5) + theme_bw()
+```
+
+# SessionInfo
+```{r, echo = F}
+sessionInfo()
+```
+

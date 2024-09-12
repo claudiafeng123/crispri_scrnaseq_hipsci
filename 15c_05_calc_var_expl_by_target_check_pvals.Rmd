@@ -1,0 +1,126 @@
+---
+title: "Check the P-values"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2023-10-18"
+---
+
+The process was fairly complicated and there were a lot of bugs on first glance, so check that the results are in fact what you think they should be.
+
+# Preparations
+```{r prep, echo = F, warning=FALSE, message=FALSE}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"))
+```
+
+# Check pairs
+
+Did the pairs that we're meant to find p-values for actually get computed?
+
+```{r, echo = F}
+## check for missing permutations
+most_recent <- unlist(lapply(strsplit(list.files(file.path(OutFolder, "15c_calc_var_expl_by_target", "15c_00_calc_var_expl_by_target_pick_pairs"), 
+                                                 pattern = "_pairs_to_permute.tsv"), "_"), "[[", 1))
+all_permutations2test <- fread(file.path(OutFolder, "15c_calc_var_expl_by_target", "15c_00_calc_var_expl_by_target_pick_pairs", paste0(most_recent, "_pairs_to_permute.tsv")))
+permuted_files <- list.files(file.path(OutFolder, "15c_calc_var_expl_by_target", "15c_03_calc_var_expl_by_target_permute_lines_all_pairs/"), recursive = T)
+permuted_pairs <- gsub(permuted_files, pattern = paste0(".*", most_recent, "_|[.]tsv[.]gz"), replacement = "")
+permuted_pairs <- data.frame(
+  target = unlist(lapply(strsplit(permuted_pairs, "_"), "[[", 1)),
+  downstream_gene_name = unlist(lapply(strsplit(permuted_pairs, "_"), "[[", 2))
+)
+missing_pairs <- all_permutations2test %>%
+  dplyr::filter(!(paste0(target, "_", downstream_gene_name) %in% paste0(permuted_pairs$target, "_", permuted_pairs$downstream_gene_name)))
+
+if (dim(missing_pairs)[1] > 0){
+  print("Missing some pairs!")
+} else{
+  print("All pairs have data!")
+}
+```
+
+
+# Significant LFCs
+
+Check the significant LFCs are reasonable.
+
+## Distribution of Un-adjusted p-values
+
+```{r lfc_pval_dist, fig.width = 8, fig.height=3, echo = F, warning = F, message = F}
+ggplot(lfc_pvals, aes(x = pval)) + 
+  xlab("Estimated p-value (unadjusted)") + ylab("# of Downstream x Target Pairs") + 
+  geom_histogram() + theme_bw()
+```
+Some of these are driven by the targets that 
+remove anything 
+
+```{r lfc_pval_dist_with_min_line_thresh, fig.width = 8, fig.height=3, echo = F, warning = F, message = F}
+ggplot(lfc_pvals %>%
+         dplyr::filter(n_paired_lines >= min_n_paired_lines), aes(x = pval)) + 
+  xlab("Estimated p-value (unadjusted)") + ylab("# of Downstream x Target Pairs") + 
+  geom_histogram() + theme_bw()
+```
+
+
+## Number of Permutations Computed
+
+```{r lfc_n_perms_computed, fig.width = 12, fig.height=8, echo = F, warning = F, message = F}
+ggplot(lfc_pvals, aes(x = permutations_tested)) + 
+  facet_wrap(~ n_paired_lines, scales = 'free_y') + 
+  scale_y_log10() + 
+  xlab("# of Permutations Computed") + ylab("# of Downstream x Target Pairs") + 
+  geom_histogram() + theme_bw()
+```
+
+
+## # of Permutations Beating True Value
+
+```{r lfc_n_perms_beating_true_value, fig.width = 12, fig.height=8, echo = F, warning = F, message = F}
+ggplot(lfc_pvals, aes(x = perms_beating_true_value)) + 
+  facet_wrap(~ n_paired_lines, scales = 'free_y') + 
+  scale_y_log10() + 
+  xlab("# of Permutations Beating True Value") + ylab("# of Downstream x Target Pairs") + 
+  geom_histogram() + theme_bw()
+```
+
+# Significant Post-Knockdown Expression
+
+
+## Distribution of Un-adjusted p-values
+
+```{r post_kd_pval_dist_with_min_line_thresh, fig.width = 8, fig.height=3, echo = F, warning = F, message = F}
+ggplot(post_kd_expr_pvals %>%
+         dplyr::filter(n_paired_lines >= min_n_paired_lines), aes(x = pval)) + 
+  xlab("Estimated p-value (unadjusted)") + ylab("# of Downstream x Target Pairs") + 
+  geom_histogram() + theme_bw()
+```
+
+## Number of Permutations Computed
+
+```{r post_kd_n_perms_computed, fig.width = 12, fig.height=8, echo = F, warning = F, message = F}
+ggplot(post_kd_expr_pvals, aes(x = permutations_tested)) + 
+  facet_wrap(~ n_paired_lines, scales = 'free_y') + 
+  scale_y_log10() + 
+  xlab("# of Permutations Computed") + ylab("# of Downstream x Target Pairs") + 
+  geom_histogram() + theme_bw()
+```
+
+## # of Permutations Beating True Value
+
+```{r post_kd_expr_n_perms_beating_true_value, fig.width = 12, fig.height=8, echo = F, warning = F, message = F}
+ggplot(post_kd_expr_pvals, aes(x = perms_beating_true_value)) + 
+  facet_wrap(~ n_paired_lines, scales = 'free_y') + 
+  scale_y_log10() + 
+  xlab("# of Permutations Beating True Value") + ylab("# of Downstream x Target Pairs") + 
+  geom_histogram() + theme_bw()
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
+

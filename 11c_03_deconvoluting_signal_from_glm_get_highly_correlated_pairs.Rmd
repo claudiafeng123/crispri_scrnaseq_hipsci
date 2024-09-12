@@ -1,0 +1,326 @@
+---
+title: "What kind of correlation should we trust?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "11d_target_target_cor"
+  analysis_name : "highly_correlated"
+---
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = file.path(plotsdir, params$analysis_name, "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+Find out what the highly correlated pairs are. Criteria:
+
+1. Absolute value of correlation across all downstream genes > 0.3
+2. Absolute value of correlation across all DE genes > 0.5, the pair have at least 10 downstream DE genes in total and the pair have at least 5 downstream DE genes in common.
+
+# High Correlation Across all Downstream Genes
+
+
+High correlation (cor > 0.3):
+
+```{r, echo = F}
+high_cor <- target_target_cor_anno %>%
+  dplyr::filter(cor_all > 0.3 & gene_1 > gene_2)
+```
+
+```{r top_hits, echo = F}
+high_cor %>%
+  slice_max(abs(cor_all), n = 25) %>%
+  select(c("gene_1", "gene_2", "cor_all", "total_deg", "common_deg")) %>%
+  knitr::kable()
+```
+
+## High Correlation 
+
+```{r high_cor_all_downstream, echo = F, message = F, warning = F, fig.width = 9, fig.height = 9}
+n_plots <- 9
+
+set.seed(0)
+pairs2plot <- high_cor %>%
+  filter(abs(cor_all) > 0.3) %>%
+  select(c("gene_1", "gene_2", "cor_all"))
+pairs2plot <- pairs2plot[sample(1:dim(pairs2plot)[1], size = n_plots), ]
+pairs2plot <- pairs2plot %>% arrange(desc(abs(cor_all)))
+high_cor_scatters <- mapply(i = 1:n_plots, FUN = function(i){
+  df4plot <- data.frame(
+    g1 = magpie_lfcs_split[[pairs2plot$gene_1[i]]]$lfc,
+    g2 = magpie_lfcs_split[[pairs2plot$gene_2[i]]]$lfc
+  )
+  p <- ggplot(df4plot, aes(x = g1, y = g2)) + 
+    xlab(pairs2plot$gene_1[i]) + ylab(pairs2plot$gene_2[i]) + 
+    geom_point() + theme_bw()  + annotate(geom="text", x=max(df4plot$g1)*0.9, y=min(df4plot$g2), label=paste0("r = ", round(pairs2plot$cor_all[i], 4)),
+              color="red", hjust = 'inward')
+  
+  return(p)
+}, SIMPLIFY = F)
+ggpubr::ggarrange(plotlist = high_cor_scatters, ncol = 3, nrow =3)
+```
+
+## Medium correlation (0.2 < cor < 0.3):
+
+```{r medium_cor_all_downstream, echo = F, message = F, warning = F, fig.width = 9, fig.height = 15}
+
+set.seed(0)
+pairs2plot <- target_target_cor_anno %>%
+  filter(abs(cor_all) < 0.3 & abs(cor_all) > 0.2) %>%
+  select(c("gene_1", "gene_2", "cor_all"))
+n_plots <- min(15, dim(pairs2plot)[1])
+pairs2plot <- pairs2plot[sample(1:dim(pairs2plot)[1], size = n_plots), ]
+pairs2plot <- pairs2plot %>% arrange(desc(abs(cor_all)))
+high_cor_scatters <- mapply(i = 1:n_plots, FUN = function(i){
+  df4plot <- data.frame(
+    g1 = magpie_lfcs_split[[pairs2plot$gene_1[i]]]$lfc,
+    g2 = magpie_lfcs_split[[pairs2plot$gene_2[i]]]$lfc
+  )
+  p <- ggplot(df4plot, aes(x = g1, y = g2)) + 
+    xlab(pairs2plot$gene_1[i]) + ylab(pairs2plot$gene_2[i]) + 
+    geom_point() + theme_bw()  + annotate(geom="text", x=max(df4plot$g1)*0.9, y=min(df4plot$g2), label=paste0("r = ", round(pairs2plot$cor_all[i], 4)),
+              color="red", hjust = 'inward')
+  
+  return(p)
+}, SIMPLIFY = F)
+ggpubr::ggarrange(plotlist = high_cor_scatters, ncol = 3, nrow =5)
+```
+
+TBH this looks good to me.
+
+## Lower correlation (0.1 < cor < 0.2):
+
+```{r lower_cor_all_downstream, echo = F, message = F, warning = F, fig.width = 9, fig.height = 9}
+
+set.seed(0)
+pairs2plot <- target_target_cor_anno %>%
+  filter(abs(cor_all) < 0.2 & abs(cor_all) > 0.1) %>%
+  select(c("gene_1", "gene_2", "cor_all"))
+n_plots <- min(9, dim(pairs2plot)[1])
+pairs2plot <- pairs2plot[sample(1:dim(pairs2plot)[1], size = n_plots), ]
+pairs2plot <- pairs2plot %>% arrange(desc(abs(cor_all)))
+high_cor_scatters <- mapply(i = 1:n_plots, FUN = function(i){
+  df4plot <- data.frame(
+    g1 = magpie_lfcs_split[[pairs2plot$gene_1[i]]]$lfc,
+    g2 = magpie_lfcs_split[[pairs2plot$gene_2[i]]]$lfc
+  )
+  p <- ggplot(df4plot, aes(x = g1, y = g2)) + 
+    xlab(pairs2plot$gene_1[i]) + ylab(pairs2plot$gene_2[i]) + 
+    geom_point() + theme_bw()  + annotate(geom="text", x=max(df4plot$g1)*0.9, y=min(df4plot$g2), label=paste0("r = ", round(pairs2plot$cor_all[i], 4)),
+              color="red", hjust = 'inward')
+  
+  return(p)
+}, SIMPLIFY = F)
+ggpubr::ggarrange(plotlist = high_cor_scatters, ncol = 3, nrow =3)
+```
+
+The correlation here gets a bit sketch, but there are still some pairs that have similar downstream profiles. These are more the targets with fewer downstream effects, so similarity of effects gets drowned out by noise from all the other genes. Check if this gets better if we exclude the target gene.
+
+Can improve this by restricting to DEG only.
+
+
+
+# Pairs with High Correlation for DEG
+
+Restrict to pairs with at least 20 total DEGs
+
+```{r, echo = F}
+lots_of_common_deg <- filter(target_target_cor_anno, total_deg > 10 & 
+                               abs(cor_all) < 0.3)
+```
+
+```{r high_cor_all_deg, echo = F, message = F, warning = F, fig.width = 9, fig.height = 9}
+
+set.seed(0)
+pairs2plot <- lots_of_common_deg %>%
+  filter(cor_all_deg > 0.5) %>%
+  select(c("gene_1", "gene_2", "cor_all", "cor_common_deg", "cor_all_deg"))
+n_plots <- min(9, dim(pairs2plot)[1])
+pairs2plot <- pairs2plot[sample(1:dim(pairs2plot)[1], size = n_plots), ]
+pairs2plot <- pairs2plot %>% arrange(desc(abs(cor_common_deg)))
+high_cor_scatters <- mapply(i = 1:n_plots, FUN = function(i){
+  df4plot <- data.frame(
+    g1 = magpie_lfcs_split[[pairs2plot$gene_1[i]]]$lfc,
+    g2 = magpie_lfcs_split[[pairs2plot$gene_2[i]]]$lfc,
+    is_deg = as.character(magpie_lfcs_split[[pairs2plot$gene_1[i]]]$pval_adj < sig_pval_thresh | magpie_lfcs_split[[pairs2plot$gene_2[i]]]$pval_adj < sig_pval_thresh)
+  )
+  p <- ggplot(df4plot, aes(x = g1, y = g2, col = is_deg)) + 
+    scale_color_manual(values = c("TRUE" = "red", "FALSE" = "gray")) + 
+    xlab(pairs2plot$gene_1[i]) + ylab(pairs2plot$gene_2[i]) + 
+    geom_point(alpha = 0.4) + theme_bw() + theme(legend.position = 'none') + annotate(geom="text", x=max(df4plot$g1)*0.9, y=min(df4plot$g2)*0.9, label=paste0("r_common_deg = ", round(pairs2plot$cor_common_deg[i], 4), "\n",
+                   "r_all_deg = ", round(pairs2plot$cor_all_deg[i], 4), "\n",  "r_all = ", round(pairs2plot$cor_all[i], 4)                                                                                                                                     ),
+              color="red", hjust = 'inward')
+  
+  return(p)
+}, SIMPLIFY = F)
+ggpubr::ggarrange(plotlist = high_cor_scatters, ncol = 3, nrow =3)
+```
+
+This all looks a bit garbage and leads to a lot of issues if the two knockdowns have very different sets of knockdowns. Filter for pairs with at least 5 DEG in common.
+
+```{r, echo = F}
+lots_of_common_deg <- filter(target_target_cor_anno, total_deg > 10 & common_deg > 5 &
+                               abs(cor_all) < 0.3)
+```
+
+```{r high_cor_all_deg_some_common_deg, echo = F, message = F, warning = F, fig.width = 9, fig.height = 9}
+
+set.seed(0)
+pairs2plot <- lots_of_common_deg %>%
+  filter(cor_all_deg_excl_target > 0.5) %>%
+  select(c("gene_1", "gene_2", "cor_all", "cor_common_deg_excl_target", "cor_all_deg_excl_target"))
+n_plots <- min(9, dim(pairs2plot)[1])
+pairs2plot <- pairs2plot[sample(1:dim(pairs2plot)[1], size = n_plots), ]
+pairs2plot <- pairs2plot %>% arrange(desc(abs(cor_all_deg_excl_target)))
+high_cor_scatters <- mapply(i = 1:n_plots, FUN = function(i){
+  df4plot <- data.frame(
+    g1 = magpie_lfcs_split[[pairs2plot$gene_1[i]]]$lfc,
+    g2 = magpie_lfcs_split[[pairs2plot$gene_2[i]]]$lfc,
+    is_deg = as.character(magpie_lfcs_split[[pairs2plot$gene_1[i]]]$pval_adj < sig_pval_thresh | magpie_lfcs_split[[pairs2plot$gene_2[i]]]$pval_adj < sig_pval_thresh)
+  )
+  p <- ggplot(df4plot, aes(x = g1, y = g2, col = is_deg)) + 
+    scale_color_manual(values = c("TRUE" = "red", "FALSE" = "gray")) + 
+    xlab(pairs2plot$gene_1[i]) + ylab(pairs2plot$gene_2[i]) + 
+    geom_point(alpha = 0.4) + theme_bw() + theme(legend.position = 'none') + annotate(geom="text", x=max(df4plot$g1)*0.9, y=min(df4plot$g2)*0.9, label=paste0("r_common_deg = ", round(pairs2plot$cor_common_deg_excl_target[i], 4), "\n",
+                   "r_all_deg = ", round(pairs2plot$cor_all_deg_excl_target[i], 4), "\n",  "r_all = ", round(pairs2plot$cor_all[i], 4)                                                                                                                                     ),
+              color="red", hjust = 'inward')
+  
+  return(p)
+}, SIMPLIFY = F)
+ggpubr::ggarrange(plotlist = high_cor_scatters, ncol = 3, nrow =3)
+```
+
+```{r, echo = F}
+print("Number of pairs added:")
+print(lots_of_common_deg %>%
+  filter(abs(cor_all_deg_excl_target) > 0.5) %>% dim() %>% .[1])
+```
+
+
+# Pairs with Lots of Common DEG
+
+## Pairs with at least 10 DEG in Common
+
+Restrict to pairs with at least 10 DEG in common
+```{r, echo = F}
+lots_of_common_deg <- filter(target_target_cor_anno, common_deg > 10 & 
+                               !(abs(cor_all_deg_excl_target) > 0.5 & common_deg > 5 & total_deg > 10) & 
+                               (abs(cor_all) < 0.3))
+```
+
+```{r high_cor_common_deg, echo = F, message = F, warning = F, fig.width = 9, fig.height = 9}
+n_plots <- 9
+
+set.seed(0)
+pairs2plot <- lots_of_common_deg %>%
+  filter(abs(cor_all) < 0.3 & abs(cor_common_deg_excl_target) > 0.3) %>%
+  select(c("gene_1", "gene_2", "cor_all", "cor_common_deg_excl_target", "cor_all_deg_excl_target"))
+pairs2plot <- pairs2plot[sample(1:dim(pairs2plot)[1], size = n_plots), ]
+pairs2plot <- pairs2plot %>% arrange(desc(abs(cor_common_deg_excl_target)))
+high_cor_scatters <- mapply(i = 1:n_plots, FUN = function(i){
+  df4plot <- data.frame(
+    g1 = magpie_lfcs_split[[pairs2plot$gene_1[i]]]$lfc,
+    g2 = magpie_lfcs_split[[pairs2plot$gene_2[i]]]$lfc,
+    common_deg = as.character(magpie_lfcs_split[[pairs2plot$gene_1[i]]]$pval_adj < sig_pval_thresh & magpie_lfcs_split[[pairs2plot$gene_2[i]]]$pval_adj < sig_pval_thresh)
+  )
+  p <- ggplot(df4plot, aes(x = g1, y = g2, col = common_deg)) + 
+    scale_color_manual(values = c("TRUE" = "red", "FALSE" = "gray")) + 
+    xlab(pairs2plot$gene_1[i]) + ylab(pairs2plot$gene_2[i]) + 
+    geom_point(alpha = 0.4) + theme_bw() + theme(legend.position = 'none') + annotate(geom="text", x=max(df4plot$g1)*0.9, y=min(df4plot$g2)*0.9, label=paste0("r_common_deg = ", round(pairs2plot$cor_common_deg_excl_target[i], 4), "\n",
+                   "r_all_deg = ", round(pairs2plot$cor_all_deg_excl_target[i], 4), "\n",  "r_all = ", round(pairs2plot$cor_all[i], 4)                                                                                                                                     ),
+              color="red", hjust = 'inward')
+  
+  return(p)
+}, SIMPLIFY = F)
+ggpubr::ggarrange(plotlist = high_cor_scatters, ncol = 3, nrow =3)
+```
+
+I don't think these are all that believable and the knockdowns with lots of downstream effects seem to really get in the way here. I think there has to be further restrictions.
+
+## Pairs with a high proportion of Common DEG
+
+At least 5 common DEG, at least 50% of all DEG are DEG in both knockdowns. Correlation across all downstream genes still needs to be greater than 0.1.
+
+```{r, echo = F}
+lots_of_common_deg <- filter(target_target_cor_anno, common_deg > 5 & common_deg/total_deg > 0.5 & 
+                               !(abs(cor_all_deg_excl_target) > 0.5 & common_deg > 5 & total_deg > 10) & 
+                               abs(cor_all) < 0.2)
+```
+
+Turns out there's only one pair here and it looks a bit garbage.
+
+```{r high_frac_of_common_deg, echo = F, message = F, warning = F, fig.width = 9, fig.height = 9}
+n_plots <- 1
+
+set.seed(0)
+pairs2plot <- lots_of_common_deg %>%
+  select(c("gene_1", "gene_2", "cor_all", "cor_common_deg_excl_target", "cor_all_deg_excl_target", "common_deg", "total_deg")) %>%
+  mutate(frac_common_deg = common_deg/total_deg)
+pairs2plot <- pairs2plot[sample(1:dim(pairs2plot)[1], size = n_plots), ]
+pairs2plot <- pairs2plot %>% arrange(desc(abs(cor_common_deg_excl_target)))
+high_cor_scatters <- mapply(i = 1:n_plots, FUN = function(i){
+  df4plot <- data.frame(
+    g1 = magpie_lfcs_split[[pairs2plot$gene_1[i]]]$lfc,
+    g2 = magpie_lfcs_split[[pairs2plot$gene_2[i]]]$lfc,
+    common_deg = as.character(magpie_lfcs_split[[pairs2plot$gene_1[i]]]$pval_adj < sig_pval_thresh & magpie_lfcs_split[[pairs2plot$gene_2[i]]]$pval_adj < sig_pval_thresh)
+  )
+  p <- ggplot(df4plot, aes(x = g1, y = g2, col = common_deg)) + 
+    scale_color_manual(values = c("TRUE" = "red", "FALSE" = "gray")) + 
+    xlab(pairs2plot$gene_1[i]) + ylab(pairs2plot$gene_2[i]) + 
+    geom_point(alpha = 0.4) + theme_bw() + theme(legend.position = 'none') + annotate(geom="text", x=max(df4plot$g1)*0.9, y=min(df4plot$g2)*0.9, label=paste0("r_common_deg = ", round(pairs2plot$cor_common_deg_excl_target[i], 4), "\n",
+                   "r_all_deg = ", round(pairs2plot$cor_all_deg_excl_target[i], 4), "\n",  "r_all = ", round(pairs2plot$cor_all[i], 4)                                                                                                                                     ),
+              color="red", hjust = 'inward')
+  
+  return(p)
+}, SIMPLIFY = F)
+ggpubr::ggarrange(plotlist = high_cor_scatters, ncol = 3, nrow =3)
+```
+
+
+# Write
+
+```{r, echo = F}
+high_cor_conf <- filter(target_target_cor_anno, 
+                               (abs(cor_all_deg_excl_target) > 0.5 & common_deg > 5 & total_deg > 10) | 
+                               abs(cor_all) > 0.2 &
+                          gene_1 > gene_2)
+print("Number of highly correlated pairs:")
+print(dim(high_cor_conf)[1])
+print("Number of genes with at least one high correlation:")
+print(length(unique(c(high_cor_conf$gene_1, high_cor_conf$gene_2))))
+print("Number of genes with at least four high correlations (to be clustered):")
+genes_with_signal <- as.data.frame(table(c(high_cor_conf$gene_1, high_cor_conf$gene_2))) %>%
+  dplyr::filter(Freq >= 4) %>% .$Var1
+print(length(genes_with_signal))
+
+```
+
+Writing to:
+
+```{r, echo = F}
+fnm <- file.path(OutFolder, section_name, paste0(date, "_all_high_correlations.tsv"))
+fwrite(high_cor_conf, fnm, sep = '\t')
+print(fnm)
+```
+
+
+# Session Info
+
+```{r, echo = F}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
+
+

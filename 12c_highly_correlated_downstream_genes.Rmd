@@ -1,0 +1,297 @@
+---
+title: "Which downstream genes show similar perturbation effects?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "12c_highly_correlated_downstream_genes"
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(reshape2)
+library(ggpointdensity)
+
+HomeFolder <- params$home_folder
+date <- params$date
+
+source(paste0(HomeFolder, "scripts/io/Magpie_Utils.R"))
+source(paste0(HomeFolder, "scripts/io/Magpie_io.R"))
+
+
+
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = file.path(plotsdir, "highly_correlated/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+
+# Options
+```{r}
+maxpcs <- 10 # max numbers of PCs to plot
+opts_color_by <- c("gene", "group", "n_downstream", "n_cells", "target_lfc")
+min_cells <- as.numeric(params$min_cells) # minimum number of cells per target to include
+min_n_downstream <- as.numeric(params$min_degs) # minimum number of DEGs per target to include
+high_cor_cutoff <- 0.25
+```
+
+
+# Distribution of Correlations
+
+```{r downstream_gene_cor_dist, echo = F}
+
+ggplot(downstream_downstream_cor, aes(x = cor)) + 
+  xlab("Correlation (All Targets)") + ylab("") + 
+  geom_vline(xintercept = high_cor_cutoff, col = 'red', lty = 3) + 
+  geom_density() + theme_bw()
+
+```
+
+## Signal from Co-expression
+
+```{r cor_by_coexpression, echo = F, fig.width = 8}
+
+ggplot(downstream_downstream_cor, aes(x = abs(cor), 
+                                      fill = ifelse(is_sc_coexpressed_pair, "Co-expressed", "Not co-expressed"))) + 
+  scale_fill_manual("Single-cell Co-expression", values = c("Co-expressed" = "red", "Not co-expressed" = "gray")) + 
+  xlab("Correlation (All Targets)") + ylab("") + 
+  geom_vline(xintercept = high_cor_cutoff, col = 'red', lty = 3) + 
+  geom_density(alpha = 0.4) + theme_bw()
+
+```
+
+## Signal from mSigDb Pathways
+
+```{r cor_by_pathway, echo = F, fig.width = 8}
+
+ggplot(downstream_downstream_cor, aes(x = abs(cor), 
+                                      fill = ifelse(is_msigdb_hallmark_gene_set_pair, "Common Gene Set", "No Common Gene Set"))) + 
+  scale_fill_manual("Single-cell Co-expression", values = c("Common Gene Set" = "red", "No Common Gene Set" = "gray")) + 
+  xlab("Correlation (All Targets)") + ylab("") + 
+  geom_vline(xintercept = high_cor_cutoff, col = 'red', lty = 3) + 
+  geom_density(alpha = 0.4) + theme_bw()
+
+```
+
+# Downstream Genes with Lots of Hits
+
+## Downstream Genes with Lots of Targets Up/Down-regulating them
+
+```{r top_downstream_by_target, fig.width = 5, fig.height = 7}
+top_downstream <- magpie_lfcs %>%
+  filter(pval_adj < sig_pval_thresh) %>%
+  .$downstream_gene_name %>%
+  table() %>% as.data.frame() %>%
+  slice_max(order_by = Freq, n = 25) %>%
+  arrange(desc(Freq))
+ggplot(top_downstream, aes(x = Freq, y = reorder(`.`, Freq))) + 
+  xlab("Number of Targets") + ylab("") + 
+  geom_bar(stat = 'identity') + theme_bw()
+```
+
+## Downstream Genes with Lots of Similar Downstream Genes
+
+```{r top_downstream_by_correlation, echo = F, fig.width = 5, fig.height = 7}
+top_downstream <- filter(downstream_downstream_cor, 
+                         abs(cor) > high_cor_cutoff) %>% .$downstream_gene_1 %>% 
+  table() %>% as.data.frame()
+top_downstream <- slice_max(top_downstream, order_by = Freq, n = 25) %>%
+  arrange(desc(Freq))
+
+ggplot(top_downstream, aes(x = Freq, y = reorder(`.`, Freq))) + 
+  xlab("Number of Correlated Downstream Genes") + ylab("") + 
+  geom_bar(stat = 'identity') + theme_bw()
+```
+
+# Highly Correlated Downstream Genes
+
+For each downstream genes, figure out which other genes are up/down-regulated by the same set of targets.
+
+
+```{r downstream_cor_heatmaps, fig.width=6, fig.height=5.5, echo = F}
+
+highly_correlated <- filter(downstream_downstream_cor, abs(cor) > high_cor_cutoff)
+highly_correlated <- split.data.frame(highly_correlated, f = highly_correlated$downstream_gene_1)
+highly_correlated <- highly_correlated[which(unlist(lapply(highly_correlated, FUN = function(x){dim(x)[1]})) > 2)]
+
+#pdf(paste0(HomeFolder, 'scratch/2023-02-13_highly_correlated.pdf'), width = 6, height = 6)
+silencer <- lapply(names(highly_correlated), FUN = function(dg){
+  print(dg)
+  correlated_downstream_genes <- highly_correlated[[dg]]$downstream_gene_2
+  targets_that_de <- magpie_lfcs_by_downstream[dg] %>%
+    bind_rows() %>% as.data.frame() %>%
+    filter(pval_adj < sig_pval_thresh) %>% .$target
+  
+  df4heatmap <- magpie_lfcs_by_downstream[correlated_downstream_genes] %>%
+    bind_rows() %>% as.data.frame() %>%
+    select(c('target', 'downstream_gene_name', 'lfc')) %>%
+    dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+    column_to_rownames('target')
+  #my_heatmap(df4heatmap, main = dg, treeheight_row = 0, treeheight_col = 0, min_c = -1, max_c = 1, midpoint = 0)
+  
+  print(my_heatmap(cor(df4heatmap), main = dg, treeheight_row = 0, treeheight_col = 0, min_c = -1, max_c = 1, midpoint = 0))
+  
+})
+#dev.off()
+```
+
+# See which genes are up/down-regulated by which knockdowns
+
+```{r effect_heatmaps, fig.width=8, fig.height=5, echo = F}
+
+highly_correlated <- filter(downstream_downstream_cor, abs(cor) > high_cor_cutoff)
+highly_correlated <- split.data.frame(highly_correlated, f = highly_correlated$downstream_gene_1)
+highly_correlated <- highly_correlated[which(unlist(lapply(highly_correlated, FUN = function(x){dim(x)[1]})) > 2)]
+#pdf(paste0(HomeFolder, 'scratch/2023-02-13_highly_correlated_heatmap.pdf'), width = 8, height = 5)
+silencer <- lapply(names(highly_correlated), FUN = function(dg){
+  print(dg)
+  correlated_downstream_genes <- highly_correlated[[dg]]$downstream_gene_2
+  targets_that_de <- magpie_lfcs_by_downstream[dg] %>%
+    bind_rows() %>% as.data.frame() %>%
+    filter(pval_adj < sig_pval_thresh) %>% .$target
+  
+  df4heatmap <- magpie_lfcs_by_downstream[c(correlated_downstream_genes, dg)] %>%
+    bind_rows() %>% as.data.frame() %>%
+    filter(target %in% targets_that_de) %>%
+    select(c('target', 'downstream_gene_name', 'lfc')) %>%
+    dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+    column_to_rownames('target')
+  print(my_heatmap(df4heatmap, main = dg, treeheight_row = 0, treeheight_col = 0, min_c = -1, max_c = 1, midpoint = 0))
+  
+  #my_heatmap(cor(df4heatmap), main = dg, treeheight_row = 0, treeheight_col = 0, min_c = -1, max_c = 1, midpoint = 0)
+  
+})
+#dev.off()
+```
+
+# Shared TFs
+
+## Distribution of Correlations
+
+```{r cor_by_shared_tf, echo = F}
+common_tf_pairs <- split.data.frame(tfs, f = tfs$source)
+common_tf_pairs <- lapply(common_tf_pairs, FUN = function(df){
+  if (dim(df)[1] >=2){
+    rtn <- combn(df$target, m = 2)
+  } else {rtn <- NULL}
+  return(rtn)
+}) %>% bind_cols() %>% t() %>% as.data.frame()
+downstream_downstream_cor <- downstream_downstream_cor %>%
+  mutate(common_tf = ((paste0(downstream_gene_1, ":", downstream_gene_2) %in% paste0(common_tf_pairs$V1, ":", common_tf_pairs$V2)) | (paste0(downstream_gene_1, ":", downstream_gene_2) %in% paste0(common_tf_pairs$V2, ":", common_tf_pairs$V1))))
+
+ggplot(downstream_downstream_cor, aes(x = abs(cor), 
+                                      fill = ifelse(common_tf, "Common TF", "No Common TF"))) + 
+  scale_fill_manual("TF Target", values = c("Common TF" = "red", "No Common TF" = "gray")) + 
+  xlab("Correlation (All Targets)") + ylab("") + 
+  geom_vline(xintercept = high_cor_cutoff, col = 'red', lty = 3) + 
+  geom_density(alpha = 0.4) + theme_bw()
+
+```
+
+There's some signal, so it's possibly worth 
+```{r, fig.width = 8, fig.height = 8, echo = F}
+
+#tf <- "ATF4"
+tfs2test <- filter(tfs, target %in% all_downstream_genes)
+tfs2test <- split.data.frame(tfs2test, f = tfs2test$source) %>% lapply(FUN = function(df){dim(df)[1]}) %>% unlist()
+tfs2test <- names(tfs2test)[which(tfs2test > 3)]
+
+silencer <- lapply(tfs2test, FUN = function(tf){
+  print(tf)
+  tf_targets <- filter(tfs, source == tf & target %in% all_downstream_genes)
+cors2consider <- filter(downstream_downstream_cor,
+                        downstream_gene_1 %in% tf_targets$target & downstream_gene_2 %in% tf_targets$target) %>%
+  select(c('downstream_gene_1', "downstream_gene_2", "cor"))
+
+df4heatmap <- cors2consider %>%
+  dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'cor') %>%
+  column_to_rownames('downstream_gene_1')
+my_heatmap(df4heatmap, min_c = -1, max_c = 1, treeheight_col = 0, treeheight_row = 0)
+
+
+cors2consider <- cors2consider[!(duplicated(cors2consider$cor)),] %>%
+  slice_max(order_by = abs(cor), n = 4)
+
+ps <- lapply(1:4, FUN = function(i){
+  #print(i)
+  d1 <- cors2consider$downstream_gene_1[i]; d2 <- cors2consider$downstream_gene_2[i]
+df4plot <- data.frame(
+  dg1 = magpie_lfcs_by_downstream[[d1]]$lfc,
+  dg2 = magpie_lfcs_by_downstream[[d2]]$lfc
+)
+p <- ggplot(df4plot, aes(x = dg1, y = dg2)) + 
+  xlab(d1) + ylab(d2) + 
+  geom_point() + annotate("text",col = "red", x = max(df4plot$dg1)*0.9,  y = min(df4plot$dg2)* 0.9, label = paste0("r = ", round(cor(df4plot$dg1, df4plot$dg2), 4))) + theme_bw()
+return(p)
+})
+print(ggarrange(plotlist = ps))
+
+})
+
+
+```
+
+# Pathways
+
+mSigDB pathways haven't been great, but can give a try at GO annotations.
+
+```{r}
+
+pathway_go_terms <- gprofiler_terms$GO_ID[grep(gprofiler_terms$Term, pattern = "pathway", ignore.case = T)]
+pathway_go_terms <- gprofiler_annotations[pathway_go_terms]
+pathway_go_terms <- pathway_go_terms[which(unlist(lapply(pathway_go_terms, FUN = function(x){length(which(x %in% all_downstream_genes)) } ))  > 3)]
+
+silencer <- lapply(1:length(pathway_go_terms), FUN = function(i){
+  go_term <- gprofiler_terms$Term[which(gprofiler_terms$GO_ID == names(pathway_go_terms)[i])]
+  print(names(pathway_go_terms)[i])
+  print(go_term)
+  
+  tf_targets <- pathway_go_terms[[i]]
+cors2consider <- filter(downstream_downstream_cor,
+                        downstream_gene_1 %in% tf_targets & downstream_gene_2 %in% tf_targets) %>%
+  select(c('downstream_gene_1', "downstream_gene_2", "cor"))
+
+df4heatmap <- cors2consider %>%
+  dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'cor') %>%
+  column_to_rownames('downstream_gene_1')
+diag(df4heatmap) <- 1
+my_heatmap(df4heatmap, min_c = -1, max_c = 1, treeheight_col = 0, treeheight_row = 0)
+
+
+cors2consider <- cors2consider[!(duplicated(cors2consider$cor)),] %>%
+  slice_max(order_by = abs(cor), n = 4)
+
+ps <- lapply(1:4, FUN = function(i){
+  #print(i)
+  d1 <- cors2consider$downstream_gene_1[i]; d2 <- cors2consider$downstream_gene_2[i]
+df4plot <- data.frame(
+  dg1 = magpie_lfcs_by_downstream[[d1]]$lfc,
+  dg2 = magpie_lfcs_by_downstream[[d2]]$lfc
+)
+p <- ggplot(df4plot, aes(x = dg1, y = dg2)) + 
+  xlab(d1) + ylab(d2) + 
+  geom_point() + annotate("text",col = "red", x = max(df4plot$dg1)*0.9,  y = min(df4plot$dg2)* 0.9, label = paste0("r = ", round(cor(df4plot$dg1, df4plot$dg2), 4))) + theme_bw()
+return(p)
+})
+print(ggarrange(plotlist = ps))
+
+})
+
+
+```
+
+
+
+
+
+
+
+
+
+
+

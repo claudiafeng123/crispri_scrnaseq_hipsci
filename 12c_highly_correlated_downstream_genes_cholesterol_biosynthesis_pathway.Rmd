@@ -1,0 +1,494 @@
+---
+title: "The Cholesterol Biosynthesis Pathway"
+author: "Claudia Feng"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-08-15"
+  home_folder : "/lustre/scratch123/hgi/teams/parts/cf14/crispr_scrnaseq_hipsci/"
+  section_name : "12c_highly_correlated_downstream_genes"
+  complex_of_interest : "cholesterol_biosynthesis_pathway"
+  experiment_name : "Magpie"
+---
+
+```{r, echo = F}
+HomeFolder <- params$home_folder
+ExperimentName <- params$experiment_name
+date <- params$date
+section_name <- params$section_name
+network_of_interest <- params$network_of_interest
+```
+
+
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = paste0(plotsdir, "/", tolower(gsub( x = params$complex_of_interest, pattern = " ", replacement = '_')), "/"), dev=c("CairoPNG", "pdf"))
+print(params)
+```
+
+# Choose Genes
+
+## UMAP
+
+```{r highlighted_umap, warning = F, echo = F, fig.width = 6, fig.height = 6 }
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        col = ifelse(umap_1 > 4 & umap_2 > 2.75, "y", "n"))) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  scale_color_manual(values = c('y' = 'red', 'n' = 'gray')) + 
+  geom_point(size = 0.4) + theme_bw()  + theme(legend.position = 'none')
+
+```
+ Zoom in:
+
+```{r zoomed_in_umap, warning = F, echo = F, fig.width = 6, fig.height = 6}
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        label = gene)) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  xlim(c(4.25, 5.1)) + ylim(c(2.75, 3.75)) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  geom_point() + theme_bw() 
+
+```
+
+
+Start with the downstream genes that are known to be in the mevaolonate pathway of the cholesterol biosynthesis pathway. (https://www.nature.com/articles/nrc.2016.76)
+
+```{r, echo = F}
+genes_of_interest <- umap_coords %>%
+  dplyr::filter(umap_1 > 4 & umap_2 > 2.75) %>% .$gene %>% sort()
+#genes_of_interest <- genes_of_interest[which(genes_of_interest %in% names(magpie_lfcs_by_target))]
+print("Downstream genes to start:")
+print(genes_of_interest)
+```
+
+## Plot Correlation
+
+```{r coperturbed_scatters, echo = F, warning = F, message = F, fig.width=8.5,              fig.height = 8}
+plot_downstream_cor <- function(dg1, dg2){
+  #dg1 = "RPS27L"
+  #dg2 = 'BAX'
+  df4plot <- data.frame(
+    target = magpie_lfcs_by_downstream[[dg1]]$target,
+    dg1 = magpie_lfcs_by_downstream[[dg1]]$lfc,
+    dg2 = magpie_lfcs_by_downstream[[dg2]]$lfc
+  )
+  p <- ggplot(df4plot, aes(x = dg1, y = dg2,
+                      label = ifelse(abs(dg1) > 0.3 | abs(dg2) > 0.3, 
+                                     target, ""))) + 
+    #scale_color_manual('', values = c('y' = 'red', 'n' = 'black')) + 
+    ggrepel::geom_text_repel(col = 'red', size = 3) + 
+    xlab(dg1) + ylab(dg2) + 
+    geom_point(size = 0.2) + theme_bw() + theme(legend.position = 'none')
+  return(p)
+  
+}
+
+ggarrange(plot_downstream_cor("ACAT2", "HMGCS1"),
+plot_downstream_cor("PMVK", "MVD"),
+plot_downstream_cor("IDI1", "FDPS"),
+plot_downstream_cor("SQLE", "LSS")
+)
+
+```
+
+Some are really convincing, others not so much.
+
+# Regulating Genes
+
+## Known Regulators
+
+```{r, echo = F, message = F, warning = F}
+
+targets_that_de <- magpie_lfcs_by_downstream[genes_of_interest] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  .$target %>% table()
+targets_that_de <- data.frame(
+  target = names(targets_that_de),
+  num_targets_of_interest = as.numeric(targets_that_de),
+  num_targets_total = target_meta$n_downstream_excl_target[match(names(targets_that_de), target_meta$gene)],
+  is_tf = names(targets_that_de) %in% tfs$source,
+  is_tf_target = names(targets_that_de) %in% tfs$target,
+  in_cluster = names(targets_that_de) %in% genes_of_interest
+) %>%
+  mutate(frac_targets_of_interest = num_targets_of_interest/num_targets_total) %>%
+  dplyr::filter(num_targets_total > 3 & frac_targets_of_interest > 0.5) %>% 
+  arrange(desc(frac_targets_of_interest)) %>%
+  #slice_max(frac_targets_of_interest, n = 45) %>% 
+  dplyr::select(c("target",
+                  "num_targets_of_interest",
+                  "num_targets_total", "is_tf", 'is_tf_target', 'in_cluster'))
+names(targets_that_de) <- c("Target", "Peptide Synthesis Genes Perturbed by Target", "Number of Downstream DEG", "TF", "TF Target", "In cluster")
+
+
+
+```
+
+You can add these genes actually, but you could also...not. The literature has these genes:
+
+```{r, echo = F}
+known_genes <- c("ACAT2", "HMGCS1", "HMGCR", "MVK", "PMVK", "MVD", "IDI1", "FDPS", "FDFT1","GCPS1", "LSS", "SQLE", "MSMO1", "DHCR24", "DHCR7")
+print(known_genes)
+```
+
+## Known TF Regulators
+
+```{r}
+known_tfs <- tfs %>%
+  dplyr::filter(target %in% genes_of_interest)
+known_tfs <- left_join(known_tfs,
+                       magpie_lfcs_by_target[unique(known_tfs$source)] %>%
+                         bind_rows() %>% as.data.frame() %>%
+                         dplyr::select(c("target", "downstream_gene_name", "lfc", "pval_adj")),
+                       by = c("target" = 'downstream_gene_name', 'source' = 'target'))
+```
+
+The only two transcription factors with non-1 p-values are SREBF1 and 2. Only SREBF2 is expressed.
+
+# Final selection
+
+
+
+```{r target_downstream_heatmap, message = F, warning = F, fig.width = 6, fig.height = 5, echo = F}
+
+genes2include <- unique(c(genes_of_interest, known_genes, "SREBF1", "SREBF2"))
+genes2include <- intersect(genes2include, intersect(names(magpie_lfcs_by_downstream), names(magpie_lfcs_by_target)))
+df4heatmap <- magpie_lfcs_by_target[genes2include] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter( downstream_gene_name %in% genes2include) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc")) %>%
+  reshape2::dcast(target ~ downstream_gene_name, value.var = 'lfc') %>%
+  column_to_rownames('target')
+my_heatmap(df4heatmap, midpoint = 0, treeheight_row = 0, treeheight_col = 0, border_col = NA)
+```
+
+```{r gene_list, message = F, warning = F, fig.width = 8, fig.height = 7, echo = F}
+cat(paste(genes2include, collapse = '\n'))
+```
+
+# Total Causal Pathway Network
+
+```{r, echo = F, fig.width = 10, fig.height = 10}
+sig_effects <-  magpie_lfcs_by_target[genes2include] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter( downstream_gene_name %in% genes2include & pval_adj < sig_abs_lfc_thresh & target != downstream_gene_name) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc"))
+fwrite(sig_effects, paste0(outdir, "/", tolower(gsub( x = params$complex_of_interest, pattern = " ", replacement = '_')), "/", date, "_sig_effects.tsv"), sep = '\t')
+
+df.g <- graph.data.frame(sig_effects)
+
+plot(df.g)
+```
+
+What a mess. I'm also worried that most of this signal comes from different powers of knockdown.
+
+# Overlap with quality-control in the ER
+
+These genes are all co-perturbed with the targets of ATF6. Would be nice to say a sentence or two here.
+
+## Zoomed in UMAP
+
+```{r zoomed_in_umap, warning = F, echo = F, fig.width = 6, fig.height = 6}
+
+ggplot(umap_coords, aes(x = umap_1, y = umap_2, 
+                        label = gene)) + 
+  xlab("UMAP_1") + ylab("UMAP_2") + 
+  xlim(c(4.25, 5.1)) + ylim(c(2, 3.75)) + 
+  ggrepel::geom_text_repel(max.overlaps = Inf) + 
+  geom_point() + theme_bw() 
+
+genes_of_interest <- umap_coords %>%
+  dplyr::filter(umap_2 > 2 & umap_2 < 3.75 & umap_1 > 4.25 & umap_1 < 5.1) %>%
+  .$gene
+genes_of_interest <- genes_of_interest[!(genes_of_interest %in% genes2exclude)]
+cholesterol_genes <- umap_coords %>%
+  dplyr::filter(umap_2 > 2.75 & umap_2 < 3.75 & umap_1 > 4.25 & umap_1 < 5.1) %>%
+  .$gene
+cholesterol_genes <- cholesterol_genes[!(cholesterol_genes %in% genes2exclude)]
+atf6_genes <- umap_coords %>%
+  dplyr::filter(umap_2 > 2 & umap_2 < 2.75 & umap_1 > 4.25 & umap_1 < 5.1) %>%
+  .$gene
+atf6_genes <- atf6_genes[!(atf6_genes %in% genes2exclude)]
+
+```
+
+## Heatmaps
+
+
+### Comparison to iPSC co-expression
+
+```{r heatmap_vs_ipsc_coexpression, fig.width = 7.25, fig.height=4.5, echo = F}
+
+downstream_genes2plot <- genes_of_interest
+sc_coexpression_genes <- sc_coexpression %>%
+  dplyr::filter(gene_1 %in% downstream_genes2plot & gene_2 %in% downstream_genes2plot)
+downstream_genes2plot <- sort(unique(c(sc_coexpression_genes$gene_1, sc_coexpression_genes$gene_2)))
+
+df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+df4heatmap_sc_coexpression <- matrix(1, nrow = length(downstream_genes2plot), ncol = length(downstream_genes2plot))
+colnames(df4heatmap_sc_coexpression) <- row.names(df4heatmap_sc_coexpression) <- downstream_genes2plot
+for (i in 1:length(downstream_genes2plot)){
+  for (j in 1:i){
+    if (i != j){
+      df4heatmap_sc_coexpression[downstream_genes2plot[i],downstream_genes2plot[j]] <- df4heatmap_sc_coexpression[downstream_genes2plot[j],downstream_genes2plot[i]] <- sc_coexpression_genes %>% dplyr::filter(gene_1 == downstream_genes2plot[j] & gene_2 ==downstream_genes2plot[i]) %>% .$correlation
+    }
+    
+  }
+}
+
+row_anno <- data.frame(
+  gene = row.names(df4heatmap_iPSCs)
+) %>%
+  mutate(pathway = factor(ifelse(gene %in% cholesterol_genes, 'cholesterol biosynthesis', 'atf6 target'))) %>%
+  column_to_rownames('gene')
+
+double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_sc_coexpression,
+               min_c = -0.6, max_c = 0.6,
+               border_col = NA,
+               annotation_row = row_anno,
+           treeheight_row = 0, treeheight_col = 0)
+```
+
+### Comparison to K562 correlation
+
+```{r heatmap_vs_k562_correlation, fig.width = 7.25, fig.height=4.5, echo = F}
+downstream_genes2plot <- genes_of_interest
+K562_genes <- downstream_downstream_cor_anno %>% 
+  dplyr::filter(!(is.na(K562_gwps_cor))) %>%
+  .$downstream_gene_1 %>%
+  unique() %>% sort()
+downstream_genes2plot <- intersect(downstream_genes2plot, K562_genes)
+
+df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+df4heatmap_K562 <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'K562_gwps_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'K562_gwps_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+row_anno <- data.frame(
+  gene = row.names(df4heatmap_iPSCs)
+) %>%
+  mutate(pathway = factor(ifelse(gene %in% cholesterol_genes, 'cholesterol biosynthesis', 'atf6 target'))) %>%
+  column_to_rownames('gene')
+
+double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_K562,
+               min_c = -0.6, max_c = 0.6,
+               border_col = NA,
+           annotation_row = row_anno,
+          treeheight_row = 0, treeheight_col = 0)
+```
+
+### Some Correlation Plots
+
+Just for good measure
+
+```{r coperturbed_scatters_between_pathways, echo = F, warning = F, message = F, fig.width=8.5, fig.height = 8}
+ggarrange(
+  plot_downstream_cor("DHCR24", "HSPA5"), #high correlation between groups
+  plot_downstream_cor("CALR", "SERPINH1"),
+  plot_downstream_cor("PDIA4", "PDIA6"), #correlation within the group
+  plot_downstream_cor("HSP90B1", "IDH1") #low correlation between groups
+)
+```
+
+# Make Network
+
+## Get Genes that Regulate the Pathways
+
+
+### Known Regulators
+
+```{r, echo = F, message = F, warning = F}
+targets_that_de <- magpie_lfcs_by_downstream[genes_of_interest] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  dplyr::select(c("target", 'downstream_gene_name', 'lfc', 'pval_adj')) %>%
+  mutate(pathway = ifelse(downstream_gene_name %in% cholesterol_genes, 'Cholesterol Biosynthesis', 'ATF6 Target')) %>%
+  group_by(target) %>%
+  summarize(
+    n_downstream = n(),
+    n_cholesterol = sum(pathway == "Cholesterol Biosynthesis"),
+    n_atf6 = sum(pathway == "ATF6 Target")
+  ) %>%
+  mutate(
+    num_targets_total = target_meta$n_downstream_excl_target[match(target, target_meta$gene)],
+    is_tf = target %in% tfs$source,
+    is_tf_target = target %in% tfs$target,
+    in_cluster = target %in% genes_of_interest
+  ) %>%
+  mutate(
+    frac_targets = n_downstream/num_targets_total
+  ) 
+
+
+targets_that_de_cholesterol <- magpie_lfcs_by_downstream[cholesterol_genes] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  dplyr::select(c("target", 'downstream_gene_name', 'lfc', 'pval_adj')) %>%
+  mutate(pathway = ifelse(downstream_gene_name %in% cholesterol_genes, 'Cholesterol Biosynthesis', 'ATF6 Target')) %>%
+  group_by(target) %>%
+  summarize(
+    n_downstream = sum(pathway == "Cholesterol Biosynthesis")
+  ) %>%
+  mutate(
+    n_targets_total = target_meta$n_downstream_excl_target[match(target, target_meta$gene)],
+    is_tf = target %in% tfs$source,
+    is_tf_target = target %in% tfs$target,
+    in_cluster = target %in%cholesterol_genes ,
+    n_genes_in_cluster = length(cholesterol_genes),
+  ) %>%
+  mutate(
+    sensitivity = n_downstream/n_targets_total,
+    precision = n_downstream/length(cholesterol_genes)
+  ) %>% dplyr::filter(sensitivity > 0.2 & precision > 0.2)
+to_save = list(
+  targets_that_de = targets_that_de_cholesterol,
+  genes_of_interest = cholesterol_genes
+)
+saveRDS(to_save, paste0(outdir, '/', date, '_targets_that_de_cholesterol.RDS'))
+```
+
+
+## Known TF Regulators
+
+```{r}
+known_tfs <- tfs %>%
+  dplyr::filter(target %in% genes_of_interest)
+known_tfs <- left_join(known_tfs,
+                       magpie_lfcs_by_target[unique(known_tfs$source)] %>%
+                         bind_rows() %>% as.data.frame() %>%
+                         dplyr::select(c("target", "downstream_gene_name", "lfc", "pval_adj")),
+                       by = c("target" = 'downstream_gene_name', 'source' = 'target'))
+```
+
+The only two transcription factors with non-1 p-values are SREBF1 and 2. Only SREBF2 is expressed.
+
+
+## Network
+
+```{r, echo = F, fig.width = 10, fig.height = 10}
+
+genes2include <- intersect(genes_of_interest, intersect(names(magpie_lfcs_by_downstream), names(magpie_lfcs_by_target)))
+
+sig_effects <-  magpie_lfcs_by_target[genes2include] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter( downstream_gene_name %in% genes2include & pval_adj < sig_abs_lfc_thresh & target != downstream_gene_name) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc"))
+#fwrite(sig_effects, paste0(outdir, "/", tolower(gsub( x = params$complex_of_interest, pattern = " ", replacement = '_')), "/", date, "_sig_effects.tsv"), sep = '\t')
+
+df.g <- graph.data.frame(sig_effects)
+
+plot(df.g)
+```
+
+## Effects of the Master Transcription Factor?
+
+We know what the actual the TFs. What are their DEGs?
+
+```{r, echo = F}
+srebf_dgs <- magpie_lfcs_by_target[c("SREBF1", "SREBF2")] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(downstream_gene_name %in% c("SREBF1", "SREBF2")) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc", "pval_adj"))
+
+srebf_dgs <- magpie_lfcs_by_target[c("SREBF1", "SREBF2")] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc", "pval_adj"))
+```
+
+No DEGs. Likely too little power.
+
+Does anything cause differential expression of the genes?
+
+```{r}
+regulators_of_srebfs <- magpie_lfcs_by_downstream[["SREBF2"]] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(target != downstream_gene_name) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc", "pval_adj")) %>%
+  mutate(in_pathway= target %in% cholesterol_genes)
+ggplot(regulators_of_srebfs, aes( x =lfc, fill = in_pathway)) + 
+  geom_density(alpha = 0.4) + theme_bw()
+t.test(regulators_of_srebfs$lfc[which(regulators_of_srebfs$in_pathway == T)],
+       regulators_of_srebfs$lfc[which(regulators_of_srebfs$in_pathway == F)])
+```
+## Co-expressed Genes
+
+```{r cholesterol_heatmap_vs_ipsc_coexpression, fig.width = 7.25, fig.height=6.5, echo = F}
+
+downstream_genes2plot <- cholesterol_genes
+sc_coexpression_genes <- sc_coexpression %>%
+  dplyr::filter(gene_1 %in% downstream_genes2plot & gene_2 %in% downstream_genes2plot)
+downstream_genes2plot <- sort(unique(c(sc_coexpression_genes$gene_1, sc_coexpression_genes$gene_2)))
+
+df4heatmap_iPSCs <- downstream_downstream_cor_anno %>%
+  dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+  dplyr::filter(downstream_gene_1 %in% downstream_genes2plot & downstream_gene_2 %in% downstream_genes2plot) %>%
+  reshape2::dcast(downstream_gene_1 ~ downstream_gene_2, value.var = 'iPSC_cor') %>%
+  column_to_rownames('downstream_gene_1') %>%
+  as.matrix()
+
+df4heatmap_sc_coexpression <- matrix(1, nrow = length(downstream_genes2plot), ncol = length(downstream_genes2plot))
+colnames(df4heatmap_sc_coexpression) <- row.names(df4heatmap_sc_coexpression) <- downstream_genes2plot
+for (i in 1:length(downstream_genes2plot)){
+  for (j in 1:i){
+    if (i != j){
+      df4heatmap_sc_coexpression[downstream_genes2plot[i],downstream_genes2plot[j]] <- df4heatmap_sc_coexpression[downstream_genes2plot[j],downstream_genes2plot[i]] <- sc_coexpression_genes %>% dplyr::filter(gene_1 == downstream_genes2plot[j] & gene_2 ==downstream_genes2plot[i]) %>% .$correlation
+    }
+    
+  }
+}
+
+double_heatmap(cor_mat1 = df4heatmap_iPSCs, cor_mat2 = df4heatmap_sc_coexpression,
+               min_c = -0.6, max_c = 0.6,
+               border_col = NA,
+               treeheight_row = 0, treeheight_col = 0)
+
+
+df4plot <- left_join(
+  downstream_downstream_cor_anno %>%
+    dplyr::select(c('downstream_gene_1', 'downstream_gene_2', 'iPSC_cor')) %>%
+    dplyr::filter(downstream_gene_1 %in% c(downstream_genes2plot, "SREBP2", "SREBP1") & downstream_gene_2 %in% c(downstream_genes2plot, "SREBP2", "SREBP1")),
+  sc_coexpression_genes,
+  by = c('downstream_gene_1' = 'gene_1', 'downstream_gene_2' = 'gene_2')
+) %>%
+  dplyr::filter(!(is.na(correlation)))
+
+```
+
+
+
+# The ATF6 Pathway
+
+Try the ATF6 pathway on its own.
+
+```{r, echo = F, eval = F}
+srebf_dgs <- magpie_lfcs_by_target["ATF6"] %>%
+  bind_rows() %>% as.data.frame() %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & target != downstream_gene_name) %>%
+  dplyr::select(c("target", "downstream_gene_name", "lfc", "pval_adj"))
+```
+
+JK, ATF6 wasn't even in the library. 
+
+# Session info
+
+```{r session_info}
+sessionInfo()
+```

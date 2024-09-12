@@ -1,0 +1,230 @@
+---
+title: "Impacts of Adding Fixed Effects"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  date: "2022-10-05"
+  section_name: "15c_calc_var_expl_by_target"
+  subsection_name : "15c_02_calc_var_expl_by_target_fixed_effects"
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = paste0(plotsdir, '/'), dev=c("CairoPNG", "pdf"))
+```
+
+# Fixed vs. No Fixed Effects
+
+## Histogram of Change
+
+```{r ddLL_hist, warning = F, echo = F, message = F, fig.width = 8, fig.height = 3}
+## histogram of change
+ggplot(fixed_effect_df %>%
+         dplyr::filter(dLL_no_fixed_effects > 0 | dLL_with_fixed_effects > 0), aes(x = dLL_no_fixed_effects - dLL_with_fixed_effects)) + 
+  xlab("Difference in Change in Log-likelihood (No Fixed Effects - With Effects)") + ylab("# of Target x Downstream Gene Pairs") + 
+  geom_histogram(bins = 80) + theme_bw()
+
+```
+
+## Scatter Plot of Change in Log-likelihood
+
+```{r dLL_scatter, warning = F, echo = F, message = F, fig.width = 6, fig.height = 6}
+
+ggplot(fixed_effect_df %>%
+         dplyr::filter(dLL_no_fixed_effects > 0 | dLL_with_fixed_effects > 0), aes(x = dLL_no_fixed_effects, y = dLL_with_fixed_effects)) + 
+  xlab("No Fixed Effects") + ylab("With Fixed Effects") + ggtitle("Change in Log-likelihood") + 
+  scale_x_log10() + scale_y_log10() + 
+  geom_point(size = 0.4, alpha = 0.4) + theme_bw()
+
+```
+
+# Adding On-target Expression as a Fixed Effect
+
+Justify adding on-target expression as a fixed effect.
+
+```{r, echo = F, warning = F, message = F}
+# prep some stuff for plotting later
+on_target_df <- fixed_effect_df %>%
+                      dplyr::select(c("target", "downstream_gene_name", contains("on_target_expr")))
+## get the pairs where donor at least explains something
+on_target_df <- fixed_effect_df %>%
+                      dplyr::filter(frac_var_expl_no_fixed_effects > 0)
+```
+
+## Motivation
+
+### CRISPRi Efficacy is a Line Effect
+
+```{r crispr_efficacy, echo = F, warning = F, message = F, fig.width = 5, fig.height=5}
+target_efficacy_summary <- target_meta_by_line  %>%
+  group_by(cell_line) %>%
+  summarize(n_lots_of_deg = length(which(n_deg >= 20)),
+            n_successful_crispr = length(which(pval_adj < 0.1))) %>%
+  mutate(Donor = unlist(lapply(strsplit(cell_line, "_"), "[[", 1)))
+
+ggplot(target_efficacy_summary, aes(x = n_successful_crispr, y = n_lots_of_deg, 
+                                    label = cell_line, col = Donor)) + 
+  xlab("# of Significantly Down-regulated Targets") + ylab("# of Downstream DE Genes") + 
+  ggrepel::geom_text_repel() + 
+  geom_point() + theme_bw() + theme(legend.position = 'none')
+```
+
+### Less Target Down-regulation Leads to Less Effect - an Example
+
+```{r oct4_example, echo = F, warning = F, message = F, fig.width = 10, fig.height = 5}
+
+targets2test <- target_meta %>%
+  dplyr::select(c('gene', 'n_downstream_excl_target', 'n_cells_total', "control_norm_expr"))
+tg <- "POU5F1"
+perturbed_expression <- get_knockdown_expression(target_gene = tg)
+control_expression <- get_control_expression()
+
+#only consider the top 2k most significant changed genes
+mean_lfc <- dplyr::filter(mean_effect, target == tg)
+downstream_genes4umap <- mean_lfc %>%
+  dplyr::filter(pval_adj < 0.1 & abs(lfc) > 0.1) %>%
+  .$downstream_gene
+
+expression_matrix <- as.data.frame(bind_rows(perturbed_expression,
+                                             control_expression %>% mutate(target = "NonTarget")))
+df4umap <- expression_matrix %>% column_to_rownames('id') %>%
+  dplyr::select(all_of( downstream_genes4umap))
+umap_coords <- umap(df4umap)
+umap_coords <- bind_cols(expression_matrix %>%
+                           dplyr::select(c("target", "cell_line", "donor", 'id', 
+                                           contains(paste0(":", tg, ":"))
+                                           )), umap_coords$layout)
+colnames(umap_coords) <- c("target", "cell_line", "donor", "id", "on_target_expression", "UMAP_1", "UMAP_2")
+
+## categories should be control, perturbed - high, medium and low expression
+mean_control_lfc <- umap_coords %>% 
+  dplyr::filter(target == NonTargetGeneName) %>% .$on_target_expression
+sd_control_lfc <- sd(mean_control_lfc)
+mean_control_lfc <- mean(mean_control_lfc)
+mean_knockdown_lfc <- umap_coords %>% 
+  dplyr::filter(target == tg) %>% .$on_target_expression
+sd_knockdown_lfc <- sd(mean_knockdown_lfc)
+mean_knockdown_lfc <- mean(mean_knockdown_lfc)
+df4plot <- umap_coords %>%
+  mutate(Status = ifelse(target == NonTargetGeneName, 1,
+                         ifelse(on_target_expression > mean_control_lfc - sd_control_lfc, 2, 
+                                ifelse(on_target_expression > mean_knockdown_lfc + sd_knockdown_lfc, 3, 4))))
+df4plot <- arrange(df4plot, by = Status)
+df4plot$Status <- factor(df4plot$Status)
+levels(df4plot$Status) <- c("Control Cell", paste0("Perturbed Cell with ", c('High', "Moderate", 'Low'), " ", tg, " Expression"))
+color_vec <- c('gray', 'navy', 'royalblue', 'lightblue')
+names(color_vec) <- levels(df4plot$Status)
+
+ggplot(df4plot, aes(x = UMAP_1, y = UMAP_2, 
+                    col = Status, 
+                    size = ifelse(target == tg, "Perturbed", "Control"),
+                    alpha = ifelse(target == tg, "Perturbed", "Control"))) + 
+  ggtitle(tg) + 
+  xlim(c(-2.5, 3)) +
+  scale_color_manual("On-target Expression", values = color_vec) + 
+  scale_size_manual("Perturbation Status", values = c("Perturbed" = 0.6, "Control" = 0.2)) + 
+  scale_alpha_manual("Perturbation Status", values = c("Perturbed" = 0.6, "Control" = 0.2)) + 
+  geom_point() + theme_bw()
+
+```
+
+
+## Global Effect of Adding On-target Effect as a Fixed Effect
+
+```{r on_target_coef_lmm_coef, warning = F, echo = F, message = F, fig.width = 6, fig.height = 6}
+ggplot(fixed_effect_df, aes(x = lfc_coef_on_target_expr,y = lfc_tval_on_target_expr)) + 
+  xlab("LMM Coefficient") + ylab("t-value") + ggtitle("Effect of Sex") + 
+  geom_point(size = 0.4, alpha = 0.4) + theme_bw()
+```
+
+
+
+
+# Sex-linked Genes
+
+```{r, echo = F}
+sex_df <- left_join(
+  fixed_effect_df %>%
+  dplyr::select(c('target', 'downstream_gene_name', 
+                  "dLL_no_fixed_effects", "dLL_with_fixed_effects",
+                  contains("_sex"))),
+  var_expl %>%
+    dplyr::select(c('target', 'downstream_gene_name', "control_expr_coef_sex", "control_expr_tval_sex"))
+)
+```
+
+## Effect of Sex
+
+```{r}
+ggplot(sex_df)
+```
+
+## Global Effects
+
+### Distribution of Sex Coefficient
+
+
+```{r sex_coef_hist, echo = F, warning = F, message = F, fig.width = 5, fig.height = 4}
+ggplot(fixed_effect_df, aes(x = abs(lfc_coef_sex))) + 
+  ggtitle("Effect of Sex") + xlab("LMM Coefficient (Absoute Value)") + ylab("# of Target x Downstream Pairs") + 
+  geom_histogram(size = 0.4, alpha = 0.4, bins = 50) + theme_bw()
+```
+
+### Distribution of Sex t-value
+
+```{r sex_tval_hist, echo = F, warning = F, message = F, fig.width = 5, fig.height = 4}
+ggplot(fixed_effect_df, aes(x = lfc_tval_sex)) + 
+  ggtitle("Effect of Sex") + xlab("LMM t-value") + ylab("# of Target x Downstream Pairs") + 
+  geom_histogram(size = 0.4, alpha = 0.4, bins = 50) + theme_bw()
+```
+
+### Volcano Plot (Coefficient vs. t-value)
+
+```{r sex_coef_lmm_coef, warning = F, echo = F, message = F, fig.width = 4.5, fig.height = 4.5}
+ggplot(fixed_effect_df, aes(x = lfc_coef_sex,y = lfc_tval_sex)) + 
+  xlab("LMM Coefficient") + ylab("t-value") + ggtitle("Effect of Sex") + 
+  geom_point(size = 0.4, alpha = 0.4) + theme_bw()
+```
+
+## Global Effect of Adding Sex as a Fixed Coefficient
+
+### Change of dLL
+```{r dLL_change_scatter}
+
+df2plot <- fixed_effect_df
+ggplot(sex_df %>%
+         dplyr::filter(!(is.infinite(lfc_coef_sex)) & !(is.na(control_expr_coef_sex))), aes(x = control_expr_tval_sex, y =  lfc_tval_sex)) + 
+  geom_point() + theme_bw()
+```
+
+### Change in Variance Explained
+
+### Change of dLL
+```{r dLL_change_volcano}
+df2plot <- fixed_effect_df
+ggplot(sex_df %>%
+         dplyr::filter(!(is.infinite(lfc_coef_sex)) & !(is.na(control_expr_coef_sex))), aes(x = control_expr_tval_sex, y =  lfc_tval_sex)) + 
+  geom_point() + theme_bw()
+```
+
+
+
+## Pairs with Effects
+
+```{r, echo = F, message = F, warning = F, fig.width=5, fig.height=5}
+plot_scatter(target_gene = "RBM42", downstream_gene_name = "RPS4Y1", color_by_sex = T)
+plot_scatter(target_gene = "CTR9", downstream_gene_name = "NLGN4X", color_by_sex = T)
+```
+
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
+

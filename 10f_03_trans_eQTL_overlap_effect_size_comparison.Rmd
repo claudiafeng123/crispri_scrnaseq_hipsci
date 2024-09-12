@@ -1,0 +1,114 @@
+---
+title: "What overlap is there (if any) with trans eQTLs?"
+author: "Britta Velten"
+date:  "`r format(Sys.Date(),'%e %B, %Y')`"
+output: BiocStyle::html_document
+params:
+  section_name : "10f_trans_eQTL_overlap"
+  subsection_name : "10f_01_trans_eQTL_overlap_overall_signal"
+
+---
+
+# Preparations
+```{r prep, warning=FALSE, message=FALSE, echo = F}
+# to render pngs in html
+library(Cairo)
+knitr::opts_chunk$set(fig.path = plotsdir, dev=c("CairoPNG", "pdf"), echo = F, warning = F, message = F)
+```
+
+# Comparison of Effect Sizes
+
+```{r}
+ggplot(control_cis_effects, aes(x = cis_eqtl_beta, y = control_beta, col = -log10(control_p_value))) + 
+  geom_point(size = 0.4) + theme_bw()
+
+```
+
+
+# Down-regulation of Target Gene
+
+```{r}
+### down-regulation of target
+df4plot <- left_join(trans_eQTL_df, expression_variance)
+ggplot(df4plot, aes(x = abs(control_beta), y = abs(target_lfc), label = gene_name, col = sc_var)) + 
+  ggrepel::geom_text_repel(size = 8/.pt) + 
+  xlab("Natural effects") + ylab("CRISPR down-regulation") + 
+  geom_point(size = 0.4) + geom_abline(slope = c(1,2), lty = 3, col = 'red') + theme_bw()
+```
+## Top Effects
+
+Consider the SNPs where there is significant on-target expression and also signal for natural expression variation in our control lines.
+
+```{r}
+df <- left_join(left_join(trans_eQTL_df, expression_variance) %>%
+  mutate(crispr_n_trans = target_meta$n_downstream_excl_target[match(gene_name, target_meta$gene)]),
+  effect_cor_df %>% dplyr::select(c("snp_id", 'beta_cor', 'pval_cor')))
+snps2consider <- df %>%
+  dplyr::filter(pval_adj < sig_pval_thresh & crispr_n_trans > 1) %>%
+  mutate(ratio_of_effect = abs(control_beta/target_lfc)) %>%
+  slice_max(ratio_of_effect, n = 20) 
+```
+
+
+## Effects with Signal
+
+Figure out which cis eQTLs have some signal:
+
+```{r, fig.width = 4, fig.height = 4}
+s <- '11_805592_C_G'
+df2plot <- cis_eQTL_meta %>%
+    dplyr::filter(snp_id == s ) 
+c <- cor(df2plot$trans_eQTL_beta, df2plot$crispr_lfc)
+p <- ggplot(df2plot, aes(x = trans_eQTL_beta, y = crispr_lfc,
+                      col = ifelse(crispr_pval_adj < 0.1, 'y', 'n'),
+                      label = ifelse(trans_gene_name == cis_gene_name, cis_gene_name, ''))) + 
+    ggrepel::geom_text_repel() + 
+    scale_color_manual('', values = c('y' = 'red', 'n' = 'gray')) + 
+    ggtitle(paste0(df2plot$cis_gene_name, " - ", df2plot$snp_id)) + 
+    geom_point()+ 
+    annotate('text', label = paste0("Pearson's R = ", formatC(c, 4)), x = -Inf, y = -Inf, hjust = -0.15, vjust = -2) +
+    theme_bw() + theme(legend.position = 'none') 
+p
+  
+
+```
+
+
+Do the high effect genes have smaller effect sizes?
+
+```{r}
+df4plot <- df %>%
+  dplyr::filter(pval_adj < sig_pval_thresh) %>%
+  mutate(effect_size_ratio = control_beta/target_lfc)
+ggplot(df4plot, aes(x = abs(effect_size_ratio), y= crispr_n_trans)) + 
+  geom_point()
+```
+
+
+
+
+# Distribution of Correlation
+
+Do the eQTLs that correlate well have strong cis eQTL effects?
+
+```{r}
+df4plot <- left_join(control_cis_effects, effect_cor_df)
+ggplot(df4plot, aes(x = cis_eqtl_beta, y = beta_cor)) + 
+  geom_point()
+```
+# Reproducibility in Strong Effects
+
+```{r}
+
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
